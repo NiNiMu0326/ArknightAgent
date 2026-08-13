@@ -411,7 +411,20 @@ def main():
     # ===== 3. PRTS Wiki 同步 =====
     log("\n[3/4] PRTS Wiki 增量同步")
     prts_args = ["--update-index"] if not args.dry_run else ["--dry-run"]
+
+    # 快照数据文件（同步后对比），检测 sync_prts 是否新增干员/敌人。
+    # knowledge 集合的更新不经过步骤 2 的 GraphRAG 检测，需单独判断是否重启。
+    def _snapshot_prts_data() -> dict:
+        snap = {}
+        for p in (BASE_DIR / "data").glob("all_*.json"):
+            snap[p.name] = (p.stat().st_size, p.stat().st_mtime)
+        return snap
+
+    prts_before = _snapshot_prts_data() if not args.dry_run else None
     run_script("sync_prts.py", prts_args)
+    if prts_before is not None and _snapshot_prts_data() != prts_before:
+        log("  PRTS 数据有更新，稍后重启服务")
+        any_changes = True
 
     if args.dry_run:
         log("\n(dry-run 结束)")
