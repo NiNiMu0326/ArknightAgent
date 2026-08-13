@@ -75,10 +75,15 @@ import re
 import time
 from bs4 import BeautifulSoup
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+from common import PRTS_HEADERS
+
 
 def get_all_operators():
     url = 'https://prts.wiki/w/干员一览/干员id'
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = PRTS_HEADERS
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
@@ -156,7 +161,7 @@ def parse_attack_range_to_string(svg):
 
 def get_operator_range(operator_name):
     url = f'https://prts.wiki/w/{operator_name}'
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    headers = PRTS_HEADERS
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
@@ -231,7 +236,7 @@ def merge_ranges(ranges):
 
 def get_wikitext(operator_name):
     url = f"https://prts.wiki/api.php?action=parse&page={operator_name}&prop=wikitext&format=json"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = PRTS_HEADERS
     try:
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
@@ -242,7 +247,7 @@ def get_wikitext(operator_name):
 
 def get_html(operator_name):
     url = f"https://prts.wiki/w/{operator_name}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = PRTS_HEADERS
     try:
         response = requests.get(url, headers=headers, timeout=10)
         return response.text

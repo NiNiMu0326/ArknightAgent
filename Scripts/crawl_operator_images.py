@@ -2,13 +2,15 @@ import requests
 import json
 import time
 import re
+import sys
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
 
+sys.path.insert(0, str(Path(__file__).parent))
+from common import PRTS_HEADERS
+
 API_URL = "https://prts.wiki/api.php"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+HEADERS = PRTS_HEADERS
 
 DATA_DIR = Path("data/operator_images")
 INDEX_FILE = DATA_DIR / "index.json"

@@ -37,6 +37,7 @@ sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from scraper import parse_operator
+from common import PRTS_HEADERS
 
 
 # ===================== 日志 =====================
@@ -51,7 +52,7 @@ def log(msg: str):
         print(line)
     except UnicodeEncodeError:
         # Windows GBK console fallback
-        print(line.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
+        print(line.encode("gbk", errors="replace").decode("gbk", errors="replace"))
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
@@ -71,8 +72,7 @@ def get_operator_list_from_api() -> list:
         "cmlimit": 500,
         "format": "json",
     }
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(url, params=params, headers=headers, timeout=15)
+    resp = requests.get(url, params=params, headers=PRTS_HEADERS, timeout=15)
     data = resp.json()
     members = data.get("query", {}).get("categorymembers", [])
 
@@ -128,7 +128,7 @@ def _filter_redirects(names: list) -> list:
             "format": "json",
         }
         try:
-            resp = requests.get(url, params=params, timeout=15)
+            resp = requests.get(url, params=params, headers=PRTS_HEADERS, timeout=15)
             data = resp.json()
             # 获取重定向映射: redirect_from → redirect_to
             redirects = {}

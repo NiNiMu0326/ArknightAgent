@@ -114,35 +114,16 @@ def rechunk_all(skip_knowledge: bool = False) -> bool:
 
 
 def restart_uvicorn():
-    """重启 uvicorn 服务。"""
-    log("  重启 uvicorn...")
-    import signal
-    # 找 uvicorn 进程
+    """重启 uvicorn 服务（由 systemd 管理，避免 pkill+nohup 与 systemd 冲突产生双进程）。"""
+    log("  重启 uvicorn (systemctl restart arknights-rag)...")
     result = subprocess.run(
-        ["pgrep", "-f", "uvicorn backend.main"],
+        ["systemctl", "restart", "arknights-rag"],
         capture_output=True, text=True
     )
-    pids = [int(pid) for pid in result.stdout.strip().split("\n") if pid]
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except Exception:
-            pass
-
-    # 等待旧进程退出
-    import time
-    time.sleep(2)
-
-    # 启动新进程
-    subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "backend.main:app",
-         "--host", "0.0.0.0", "--port", "8889"],
-        cwd=str(BASE_DIR),
-        stdout=open("/tmp/uvicorn.log", "a"),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    log("    ✓ uvicorn 已重启")
+    if result.returncode == 0:
+        log("    ✓ uvicorn 已重启")
+    else:
+        log(f"    ✗ systemctl 重启失败: {result.stderr[:300]}")
 
 
 # ===================== 增量 GraphRAG 更新 =====================

@@ -35,7 +35,10 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 SCRIPTS_DIR = Path(__file__).parent
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+sys.path.insert(0, str(Path(__file__).parent))
+from common import PRTS_HEADERS
+
+HEADERS = PRTS_HEADERS
 
 # ===================== PRTS API 工具 =====================
 
