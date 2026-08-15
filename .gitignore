@@ -24,3 +24,5 @@ frontend_backup/
 # 本地项目指导文档（含服务器敏感信息，不上传）
 AGENTS.md
 CLAUDE.md
+# 隔离工作区
+.worktrees/
