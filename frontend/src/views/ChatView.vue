@@ -2,7 +2,7 @@
   <div class="chat-page">
     <div class="chat-main">
       <div class="chat-panel">
-        <div class="chat-body">
+        <div class="chat-body" :class="{ 'has-messages': hasMessages }">
         <div class="chat-messages" ref="messagesContainer" @click="handleSourceClick" @scroll.passive="handleMessagesScroll">
           <div v-if="!hasMessages" class="empty-state">
             <svg class="empty-state-icon" viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -21,7 +21,7 @@
               >
                 {{ action.label }}
               </button>
-              <button class="quick-action refresh" @click="refreshQuickActions" title="刷新问题">
+              <button class="quick-action refresh" @click="refreshQuickActions" title="刷新问题" aria-label="刷新问题">
                 <svg class="refresh-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                   <path d="M23 4v6h-6"/>
                   <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -347,17 +347,19 @@
           </button>
           </form>
 
-          <div class="quick-actions" v-if="hasMessages">
-            <button
-              v-for="(action, idx) in quickQuestionsStore.quickActions"
-              :key="`qa-${idx}`"
-              class="quick-action"
-              @click="applyQuickAction(action.question)"
-              :title="action.question"
-            >
-              {{ action.label }}
-            </button>
-            <button class="quick-action refresh refresh-fixed" @click="refreshQuickActions" title="刷新问题">
+          <div class="quick-actions">
+            <div class="quick-questions">
+              <button
+                v-for="(action, idx) in quickQuestionsStore.quickActions"
+                :key="`qa-${idx}`"
+                class="quick-action"
+                @click="applyQuickAction(action.question)"
+                :title="action.question"
+              >
+                {{ action.label }}
+              </button>
+            </div>
+            <button class="quick-action refresh refresh-fixed" @click="refreshQuickActions" title="刷新问题" aria-label="刷新问题">
               <svg class="refresh-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M23 4v6h-6"/>
                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -1052,10 +1054,14 @@ async function loadQuickQuestionsData(refresh = false) {
   }
 }
 
-async function refreshQuickActions() {
+async function refreshQuickActions(event) {
   console.log('[ChatView] refreshQuickActions called')
-  // Play rotation animation
-  const refreshIcon = document.querySelector('.refresh-icon');
+  // Play rotation animation on the clicked button (page has two refresh icons,
+  // and one of them may be hidden, so don't rely on document.querySelector)
+  const trigger = event?.currentTarget
+  const refreshIcon = trigger
+    ? trigger.querySelector('.refresh-icon')
+    : document.querySelector('.refresh-icon')
   if (refreshIcon) {
     refreshIcon.classList.remove('rotating');
     void refreshIcon.offsetWidth;
@@ -1233,14 +1239,21 @@ function applyQuickAction(question) {
 .fade-enter-from, .fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 
 
+/* Desktop: empty chat keeps the centered quick actions; hide the duplicate row under the input */
+.chat-body:not(.has-messages) .chat-input-area .quick-actions { display: none; }
+
 /* Mobile: hide sidebar, full-screen chat */
 @media (max-width: 768px) {
   .chat-input-area { padding: var(--spacing-md); padding-bottom: calc(var(--spacing-md) + env(safe-area-inset-bottom)); }
   .chat-input { font-size: 16px; min-height: 44px; padding: 10px 12px; }
   .chat-messages { padding: var(--spacing-md); }
-  /* 移动端快捷问题横向滚动，避免换行堆叠挤占聊天区（需比后方基础规则更高的优先级） */
-  .chat-input-area .quick-actions { gap: var(--spacing-xs); flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
-  .chat-input-area .quick-actions::-webkit-scrollbar { display: none; }
+  /* 移动端：隐藏空状态居中的按钮组，快速问题统一放到输入框下方单行 */
+  .chat-body:not(.has-messages) .empty-state-actions { display: none; }
+  /* 输入框下方始终显示：问题区可横滑，刷新键固定在最右不随内容滚动 */
+  .chat-body:not(.has-messages) .chat-input-area .quick-actions { display: flex; }
+  .chat-input-area .quick-actions { gap: 0; flex-wrap: nowrap; margin-top: var(--spacing-sm); padding: 0; }
+  .chat-input-area .quick-questions { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: var(--spacing-xs); overflow-x: auto; padding-bottom: 2px; padding-right: var(--spacing-xs); margin-right: var(--spacing-xs); border-right: 1px solid var(--border-color); scrollbar-width: none; overscroll-behavior-x: contain; }
+  .chat-input-area .quick-questions::-webkit-scrollbar { display: none; }
   .chat-input-area .quick-action { font-size: 0.75rem; padding: var(--spacing-xs) var(--spacing-sm); flex-shrink: 0; }
   .chat-message { max-width: 92%; }
   .chat-bubble { padding: var(--spacing-sm) var(--spacing-md); }
@@ -1254,6 +1267,8 @@ function applyQuickAction(question) {
 .empty-state-desc { font-size: 0.9rem; color: var(--text-dim); max-width: 300px; }
 .empty-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--spacing-sm); margin-top: var(--spacing-lg); max-width: 100%; padding: 0 var(--spacing-md); }
 .quick-actions { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); margin-top: var(--spacing-md); padding: 0 var(--spacing-sm); }
+/* Desktop: wrapper disappears so question buttons participate directly in .quick-actions layout */
+.quick-questions { display: contents; }
 .quick-action { flex: 0 1 auto; min-width: 0; padding: var(--spacing-xs) var(--spacing-md); background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: var(--radius-lg); color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; transition: all var(--transition-fast); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quick-action:hover { border-color: var(--color-primary-dim); color: var(--color-primary); }
 .quick-action.refresh:hover { border-color: var(--color-primary); }
