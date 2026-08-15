@@ -232,7 +232,9 @@ function buildSubgraph() {
   const nodes = new Map()
   const edges = []
   const allNeighborIds = new Set()
-  const relationFilter = selectedRelations.value.length > 0 ? new Set(selectedRelations.value) : null
+  const relationFilter = controller.relationFilterActive.value
+    ? new Set(selectedRelations.value)
+    : null
 
   for (let level = 0; level < neighborLevel.value; level++) {
     const currentLevelNodes = level === 0 ? new Set(selectedNodes.value) : allNeighborIds
@@ -351,7 +353,7 @@ function applyEdgeStyles() {
     const relation = edge.data('relation')
     const isHighlighted = selectedRelations.value.includes(relation)
 
-    if (selectedRelations.value.length > 0) {
+    if (controller.relationFilterActive.value) {
       if (isHighlighted) {
         edge.addClass('selected-relation')
         edge.style('line-color', relationColors[relation] || '#00e5cc')

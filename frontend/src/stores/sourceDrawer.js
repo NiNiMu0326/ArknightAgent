@@ -10,6 +10,10 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
 
   const API_BASE = import.meta.env.VITE_API_BASE || ''
 
+  // 竞态防护：只允许最新一次 open/fetch 写入 content/loading
+  let fetchSeq = 0
+  let closeTimer = null
+
   /**
    * Convert chunk_id (e.g. "operators_char_103_angel") to filename
    * (e.g. "operators_char_103_angel.md")
@@ -22,6 +26,7 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
    * if the given one returns 404 (LLM may mislabel chunk collection).
    */
   async function fetchChunkContent(chunkId, collection) {
+    const seq = ++fetchSeq
     loading.value = true
     error.value = ''
     content.value = ''
@@ -40,7 +45,7 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
       let response = await tryFetch(collection)
 
       // Fallback: try other collections if the suggested one failed
-      if (!response) {
+      if (!response && seq === fetchSeq) {
         for (const col of VALID_COLLECTIONS) {
           if (col === collection) continue
           response = await tryFetch(col)
@@ -57,13 +62,17 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
       }
 
       const data = await response.json()
-      content.value = data.content || ''
+      if (seq === fetchSeq) {
+        content.value = data.content || ''
+      }
     } catch (e) {
       console.error('Failed to fetch chunk content:', e)
-      error.value = `加载来源内容失败: ${e.message}`
-      content.value = ''
+      if (seq === fetchSeq) {
+        error.value = `加载来源内容失败: ${e.message}`
+        content.value = ''
+      }
     } finally {
-      loading.value = false
+      if (seq === fetchSeq) loading.value = false
     }
   }
 
@@ -73,6 +82,13 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
    */
   async function open(source) {
     if (!source) return
+    // 取消上一次 close 的延迟清理，避免新来源在 300ms 内被清空；
+    // 同时作废仍在途的旧 chunk 请求，防止它后返回覆盖新来源
+    if (closeTimer !== null) {
+      clearTimeout(closeTimer)
+      closeTimer = null
+    }
+    fetchSeq++
     activeSource.value = source
 
     // Web sources: display URL info (no chunk to fetch)
@@ -93,11 +109,16 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
 
   function close() {
     isOpen.value = false
+    if (closeTimer !== null) clearTimeout(closeTimer)
     // Delay clearing content so the slide-out animation can play
-    setTimeout(() => {
-      activeSource.value = null
-      content.value = ''
-      error.value = ''
+    closeTimer = setTimeout(() => {
+      closeTimer = null
+      // 期间若已重新打开新来源，不清理新内容
+      if (!isOpen.value) {
+        activeSource.value = null
+        content.value = ''
+        error.value = ''
+      }
     }, 300)
   }
 

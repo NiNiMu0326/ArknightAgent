@@ -1,4 +1,3 @@
-import os
 import re
 import json
 import shutil
@@ -11,28 +10,10 @@ CHUNKS_DIR = BASE_DIR / "chunks"
 
 # ========== 统一配置常量 ==========
 CHUNK_CONFIG = {
-    # 通用配置
     "min_size": 1500,          # 最小chunk大小 (用于合并判断)
     "target_size": 4000,       # 最大累积大小 (超过此值不再合并)
     "max_chunk_size": 6000,    # 最大chunk大小
-
-    # 小节合并配置
-    "tiny_section_threshold": 200,
-
-    # JSON配置
-    "json_group_threshold": 3000,
-
-    # 玩法配置
-    "gameplay_separator": "##",
-
-    # 强制跳过空内容的阈值
-    "empty_content_threshold": 50,
 }
-
-# 全局索引计数器 (确保chunk_id唯一)
-_global_operator_idx = 0
-_global_story_idx = 0
-_global_json_idx = 0
 
 def json_to_text(obj: Dict[str, Any]) -> str:
     lines = []
@@ -89,86 +70,6 @@ def split_by_sections(content: str, header_level: int = 2) -> List[tuple]:
             result.append((parts[i].strip(), parts[i+1]))
     return result
 
-
-def split_section_recursive(content: str, max_size: int = 7500) -> List[tuple]:
-    """Recursively split section by ##, then ###, etc. until small enough."""
-    sections = split_by_sections(content, header_level=2)
-    if not sections:
-        return [("内容", content)]
-    
-    result = []
-    for sec_name, sec_content in sections:
-        sec_len = len(sec_content.strip())
-        
-        if sec_len <= max_size:
-            result.append((sec_name, sec_content))
-        else:
-            sub_sections = split_by_sections(sec_content, header_level=3)
-            if len(sub_sections) <= 1:
-                result.append((sec_name, sec_content))
-            else:
-                for sub_name, sub_content in sub_sections:
-                    if len(sub_content.strip()) <= max_size:
-                        result.append((f"{sec_name} - {sub_name}", sub_content))
-                    else:
-                        result.append((f"{sec_name} - {sub_name}", sub_content))
-    
-    return result
-
-def split_long_text(text: str, max_chars: int = None) -> List[str]:
-    """Split long text at paragraph or sentence boundaries, with smart size control.
-
-    First tries to split by double newlines (paragraphs), then by sentences if needed.
-    """
-    if max_chars is None:
-        max_chars = CHUNK_CONFIG["max_chunk_size"]
-
-    target_size = CHUNK_CONFIG["max_chunk_size"]
-
-    # First try splitting by paragraphs (\n\n)
-    paragraphs = text.split("\n\n")
-
-    # If paragraphs are too long, split by sentences
-    all_chunks = []
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-
-        if len(para) <= max_chars:
-            all_chunks.append(para)
-        else:
-            # Split by sentences (Chinese: 。！？, English: .!?)
-            sentences = re.split(r'(?<=[。！？])\s*', para)
-            for sent in sentences:
-                sent = sent.strip()
-                if not sent:
-                    continue
-                all_chunks.append(sent)  # 每一句作为一个 chunk
-
-    # Now merge chunks to target size
-    chunks = []
-    current = ""
-    for chunk in all_chunks:
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        # 如果当前 chunk 本身太大，直接保留
-        if len(chunk) > target_size:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(chunk)
-        elif len(current) + len(chunk) <= target_size:
-            current += "\n\n" + chunk if current else chunk
-        else:
-            if current:
-                chunks.append(current)
-            current = chunk
-    if current:
-        chunks.append(current)
-
-    return chunks
 
 def chunk_operators_file(content: str, filename: str, global_idx: int) -> List[Dict]:
     """Split operator md by ## sections with real-time splitting and merging.
@@ -275,48 +176,6 @@ def _process_chunk_realtime(content: str, chunks: list, global_idx: int, min_siz
             "source_file": filename or ""
         })
 
-def _merge_tiny_sections(sections: List[tuple], min_len: int = 500) -> List[tuple]:
-    """Merge sections < min_len into the smaller of their prev/next neighbors."""
-    section_data = list(sections)
-    total = len(section_data)
-    merge_into = {}
-
-    for i in range(total):
-        sec_name, sec_content = section_data[i]
-        if sec_content.strip() and len(sec_content.strip()) < min_len:
-            prev_i = next_i = None
-            for j in range(i - 1, -1, -1):
-                if section_data[j][1].strip():
-                    prev_i = j
-                    break
-            for j in range(i + 1, total):
-                if section_data[j][1].strip():
-                    next_i = j
-                    break
-            if prev_i is not None and next_i is not None:
-                pl = len(section_data[prev_i][1].strip())
-                nl = len(section_data[next_i][1].strip())
-                target_i = prev_i if pl <= nl else next_i
-            elif prev_i is not None:
-                target_i = prev_i
-            elif next_i is not None:
-                target_i = next_i
-            else:
-                target_i = None
-            if target_i is not None:
-                merge_into[i] = target_i
-
-    merged = list(section_data)
-    for i, target_i in sorted(merge_into.items(), reverse=True):
-        if merged[i] is None or merged[target_i] is None:
-            continue
-        tiny_name, tiny_content = merged[i]
-        merged[i] = None
-        neighbor_name, neighbor_content = merged[target_i]
-        merged[target_i] = (neighbor_name, (neighbor_content + "\n\n## " + tiny_name + "\n\n" + tiny_content).strip())
-
-    return [s for s in merged if s is not None]
-
 def _extract_h1_title(sec_content: str) -> tuple:
     """If sec_content starts with an H1 '# Title', strip it and return (title, remaining)."""
     lines = sec_content.split('\n')
@@ -330,9 +189,8 @@ def _extract_h1_title(sec_content: str) -> tuple:
 def _promote_h1_title(sections: List[tuple]) -> List[tuple]:
     """If the first section is still named '开头' and its content starts with H1, promote H1 as section name.
 
-    After _merge_tiny_sections, the original '开头' may have absorbed real content
-    (e.g. '剧情总结'). In that case the first section already has a meaningful name
-    and the H1 in its content belongs to the story, not to a document-level title.
+    When the first section already has a meaningful name, the H1 in its content
+    belongs to the story, not to a document-level title.
     """
     if not sections:
         return sections
@@ -435,8 +293,11 @@ def _process_story_chunk(content: str, chunks: list, min_size: int, max_size: in
         sub_chunk_counter[sec_name] = sub_chunk_counter.get(sec_name, 0) + 1
         sub_idx = sub_chunk_counter[sec_name]
 
-        # 格式：stories_0001_01
-        chunk_id = f"stories_{global_idx:04d}_{sec_idx:02d}"
+        # 同一章节拆成多块时必须带上 sub_idx，否则后写入的文件会覆盖前面的 chunk
+        if sub_idx == 1:
+            chunk_id = f"stories_{global_idx:04d}_{sec_idx:02d}"
+        else:
+            chunk_id = f"stories_{global_idx:04d}_{sec_idx:02d}_{sub_idx:02d}"
 
         chunks.append({
             "chunk_id": chunk_id,
@@ -517,90 +378,6 @@ def _process_knowledge_chunk(content: str, chunks: list, min_size: int, max_size
             "source_file": source_file
         })
 
-def split_at_field_boundaries(text: str, max_chunk_size: int = 8000) -> List[str]:
-    """Split text at field boundaries (lines starting with field names like "字段: value")
-    while keeping chunks as even as possible."""
-    lines = text.split("\n")
-    
-    fields = []
-    current_field_lines = []
-    current_field_name = None
-    
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        
-        if ":" in stripped and not stripped.startswith("#"):
-            field_name = stripped.split(":")[0].strip()
-            if current_field_name is None:
-                current_field_name = field_name
-            elif field_name != current_field_name:
-                if current_field_lines:
-                    fields.append({
-                        "name": current_field_name,
-                        "content": "\n".join(current_field_lines)
-                    })
-                current_field_name = field_name
-                current_field_lines = []
-        
-        current_field_lines.append(line)
-    
-    if current_field_lines:
-        fields.append({
-            "name": current_field_name,
-            "content": "\n".join(current_field_lines)
-        })
-    
-    if not fields:
-        return [text] if len(text) <= max_chunk_size else [text[:len(text)//2], text[len(text)//2:]]
-    
-    chunks = []
-    current_chunk_lines = []
-    current_chunk_size = 0
-    
-    for field in fields:
-        field_size = len(field["content"])
-        
-        if current_chunk_size + field_size <= max_chunk_size:
-            current_chunk_lines.append(field["content"])
-            current_chunk_size += field_size
-        else:
-            if current_chunk_lines:
-                chunks.append("\n".join(current_chunk_lines))
-            
-            if field_size > max_chunk_size:
-                mid = len(field["content"]) // 2
-                chunks.append(field["content"][:mid])
-                chunks.append(field["content"][mid:])
-                current_chunk_lines = []
-                current_chunk_size = 0
-            else:
-                current_chunk_lines = [field["content"]]
-                current_chunk_size = field_size
-    
-    if current_chunk_lines:
-        chunks.append("\n".join(current_chunk_lines))
-    
-    if len(chunks) == 1:
-        return chunks
-    
-    even_chunks = []
-    total_size = sum(len(c) for c in chunks)
-    target_size = total_size / len(chunks)
-    
-    merged = []
-    for chunk in chunks:
-        if not merged:
-            merged.append(chunk)
-        elif len(merged[-1]) + len(chunk) <= target_size * 1.2:
-            merged[-1] = merged[-1] + "\n" + chunk
-        else:
-            merged.append(chunk)
-    
-    return merged if merged else chunks
-
-
 def chunk_json_record(obj: Dict, collection: str, global_idx: int) -> List[Dict]:
     """Convert a JSON record to a single chunk per record.
 
@@ -660,23 +437,6 @@ def chunk_memes(memes_data: Dict, game_terms_data: Dict = None) -> List[Dict]:
     """
     chunks = []
 
-    cat_names = {
-        '六星绰号_来源': '六星绰号_来源',
-        '五星绰号_来源': '五星绰号_来源',
-        '四星绰号_来源': '四星绰号_来源',
-        '三星绰号_来源': '三星绰号_来源',
-        '二星绰号_来源': '二星绰号_来源',
-        '一星绰号_来源': '一星绰号_来源',
-        '游戏术语': '游戏术语',
-        '剧情梗_来源': '剧情梗_来源',
-        '抽卡梗_含义': '抽卡梗_含义',
-        '基建梗_含义': '基建梗_含义',
-        '活动梗_来源': '活动梗_来源',
-        '干员组合_成员_来源': '干员组合_成员_来源',
-        '近期梗_来源': '近期梗_来源',
-        '明日方舟术语': '明日方舟术语',
-    }
-
     # ========== 1. 游戏术语拆分为独立chunk ==========
     if game_terms_data:
         for idx, (term, meaning) in enumerate(sorted(game_terms_data.items()), 1):
@@ -713,8 +473,6 @@ def chunk_memes(memes_data: Dict, game_terms_data: Dict = None) -> List[Dict]:
         })
 
     # ========== 3. 其他梗分类 ==========
-    META_KEYS = {'dataset_name', 'version', 'last_updated', 'description', 'metadata'}
-
     meme_categories = [
         ("剧情梗_来源", "剧情梗"),
         ("抽卡梗_含义", "抽卡梗"),

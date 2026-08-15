@@ -134,7 +134,7 @@
                     <div
                       v-for="call in msg.calls"
                       :key="call.id"
-                      :ref="el => { if (el) toolItemRefs[call.id] = el }"
+                      :ref="el => { if (el) { toolItemRefs[call.id] = el } else { delete toolItemRefs[call.id] } }"
                       class="tool-call-item"
                       :class="{ 'has-result': msg.results?.[call.id], 'is-expanded': expandedTools.includes(call.id), 'is-interrupted': msg.results?.[call.id]?.interrupted }"
                       @click="handleToolItemClick(call.id, $event)"
@@ -413,6 +413,8 @@ const editingText = ref('')
 // Ticker for live "executing ... Xs" elapsed display on pending tool calls
 const nowTs = ref(Date.now())
 let elapsedTickerId = null
+// 每次 startAgentStream 递增；用于防止旧后台流结束时覆盖新流的 UI 状态/AbortController
+let streamGeneration = 0
 
 function startElapsedTicker() {
   if (elapsedTickerId !== null) return
@@ -580,7 +582,7 @@ function renderMessageWithSources(content, messageSources) {
       // Use collection from structured sources if available, else infer from prefix
       let collection = inferCollection(chunkId, sourceByChunkId)
 
-      return `(<span class="source-link" data-chunk-id="${escapeHtml(chunkId)}" data-collection="${collection}" title="点击查看原文">${escapeHtml(chunkId)}</span>)`
+      return `(<span class="source-link" data-chunk-id="${escapeHtml(chunkId)}" data-collection="${escapeHtml(collection)}" title="点击查看原文">${escapeHtml(chunkId)}</span>)`
     }
   )
 
@@ -734,6 +736,7 @@ async function sendMessage() {
 
 // 启动一次 Agent 流式对话（消息已存在于会话中，如用户发送/编辑重发/重新生成）
 async function startAgentStream(content) {
+  const generation = ++streamGeneration
   isLoading.value = true
   hasNewContent.value = false
   startElapsedTicker()
@@ -746,6 +749,14 @@ async function startAgentStream(content) {
   currentThinkingTimeMs.value = 0
   thinkingStartTime.value = 0
   currentRound.value = 0
+
+  // 本次流的本地状态。切走会话后旧流继续在后台运行时，
+  // 其 SSE 回调只更新这些局部变量与旧会话，不再污染新流的全局 UI 状态。
+  let streamThinking = ''
+  let streamThinkingStart = 0
+  let streamRound = 0
+  let streamPendingDelta = ''
+  const isCurrentStream = () => generation === streamGeneration
 
   // Capture session ID AFTER addMessage (which may create a new session)
   const streamSessionId = sessionStore.currentSessionId
@@ -766,8 +777,8 @@ async function startAgentStream(content) {
     try {
       const result = await api.createAgentSession()
       backendSessionId = result.session_id
-      if (sessionStore.currentSessionId) {
-        sessionStore.backendSessionIds[sessionStore.currentSessionId] = backendSessionId
+      if (streamSessionId) {
+        sessionStore.backendSessionIds[streamSessionId] = backendSessionId
         localStorage.setItem('arknights_rag_backend_sessions', JSON.stringify(sessionStore.backendSessionIds))
       }
     } catch (e) {
@@ -777,8 +788,6 @@ async function startAgentStream(content) {
       return
     }
   }
-
-  let currentToolCallMsg = null
 
   try {
     await api.agentChat({
@@ -791,38 +800,47 @@ async function startAgentStream(content) {
         // Server auto-created a new session (old one expired)
         console.log('[ChatView] Session expired, server created new session:', newSid)
         backendSessionId = newSid
-        if (sessionStore.currentSessionId) {
-          sessionStore.backendSessionIds[sessionStore.currentSessionId] = newSid
+        if (streamSessionId) {
+          sessionStore.backendSessionIds[streamSessionId] = newSid
           localStorage.setItem('arknights_rag_backend_sessions', JSON.stringify(sessionStore.backendSessionIds))
         }
       },
 
       onThinkingStart(event) {
-        currentRound.value = event.round || currentRound.value + 1
-        currentThinking.value = ''
-        currentThinkingTimeMs.value = 0
-        thinkingStartTime.value = event.timestamp_ms || Date.now()
+        streamRound = event.round || streamRound + 1
+        streamThinking = ''
+        streamThinkingStart = event.timestamp_ms || Date.now()
+        if (isCurrentStream()) {
+          currentRound.value = streamRound
+          currentThinking.value = ''
+          currentThinkingTimeMs.value = 0
+          thinkingStartTime.value = streamThinkingStart
+        }
       },
 
       onToolCallsStart(event) {
-        // Save any accumulated thinking content as a thinking message
-        if (currentThinking.value) {
-          const thinkTime = thinkingStartTime.value ? Date.now() - thinkingStartTime.value : 0
-          sessionStore.addThinkingMessageTo(streamSessionId, currentRound.value, currentThinking.value, Math.round(thinkTime))
-          currentThinking.value = ''
-          currentThinkingTimeMs.value = 0
+        // Save any accumulated thinking content as a thinking message（始终写入本次流所属会话）
+        if (streamThinking) {
+          const thinkTime = streamThinkingStart ? Date.now() - streamThinkingStart : 0
+          sessionStore.addThinkingMessageTo(streamSessionId, streamRound, streamThinking, Math.round(thinkTime))
+          streamThinking = ''
         }
         // Discard any stray answer content (tool round doesn't produce final answer)
-        currentAnswer.value = ''
-        pendingAnswerDelta = ''
-        currentRound.value = event.round || currentRound.value + 1
+        streamPendingDelta = ''
+        streamRound = event.round || streamRound + 1
         const calls = event.tool_calls.map(tc => ({
           id: tc.id,
           name: tc.name,
           arguments_summary: summarizeToolArgs(tc.name, tc.arguments),
         }))
-        sessionStore.addToolCallMessage(calls, currentRound.value, streamSessionId)
-        currentToolCallMsg = calls
+        sessionStore.addToolCallMessage(calls, streamRound, streamSessionId)
+        if (isCurrentStream()) {
+          currentAnswer.value = ''
+          pendingAnswerDelta = ''
+          currentThinking.value = ''
+          currentThinkingTimeMs.value = 0
+          currentRound.value = streamRound
+        }
       },
 
       onToolExecuting(event) {
@@ -840,17 +858,22 @@ async function startAgentStream(content) {
 
       onAnswerDelta(event) {
         // Backend already parses <think/> tags, so content_delta is pure answer text
-        // rAF 批量刷新，避免每个 SSE chunk 都触发一次重渲染
-        pendingAnswerDelta += event.delta || ''
-        if (!userAtBottom.value) hasNewContent.value = true
-        scheduleAnswerFlush()
+        streamPendingDelta += event.delta || ''
+        if (isCurrentStream()) {
+          pendingAnswerDelta += event.delta || ''
+          if (!userAtBottom.value) hasNewContent.value = true
+          scheduleAnswerFlush()
+        }
       },
 
       onThinkingDelta(event) {
-        currentThinking.value += event.content || ''
-        if (!userAtBottom.value) hasNewContent.value = true
-        if (thinkingStartTime.value) {
-          currentThinkingTimeMs.value = Date.now() - thinkingStartTime.value
+        streamThinking += event.content || ''
+        if (isCurrentStream()) {
+          currentThinking.value += event.content || ''
+          if (!userAtBottom.value) hasNewContent.value = true
+          if (thinkingStartTime.value) {
+            currentThinkingTimeMs.value = Date.now() - thinkingStartTime.value
+          }
         }
       },
 
@@ -858,22 +881,26 @@ async function startAgentStream(content) {
         // Replace accumulated thinking with complete content from backend
         // This ensures we have the full thinking even if delta streaming was incomplete
         if (event.reasoning_content) {
-          currentThinking.value = event.reasoning_content
+          streamThinking = event.reasoning_content
+          if (isCurrentStream()) {
+            currentThinking.value = event.reasoning_content
+          }
         }
       },
 
       onAnswerDone(event) {
-        flushPendingDelta()
-        const thinkTime = thinkingStartTime.value ? Date.now() - thinkingStartTime.value : 0
-        // Save thinking as independent message if present
-        if (currentThinking.value) {
-          sessionStore.addThinkingMessageTo(streamSessionId, currentRound.value, currentThinking.value, Math.round(thinkTime))
+        const thinkTime = streamThinkingStart ? Date.now() - streamThinkingStart : 0
+        // Save thinking as independent message if present（始终写入本次流所属会话）
+        if (streamThinking) {
+          sessionStore.addThinkingMessageTo(streamSessionId, streamRound, streamThinking, Math.round(thinkTime))
         }
         // Filter <think/> tags from the final answer
-        const rawAnswer = event.answer || currentAnswer.value
+        const rawAnswer = event.answer || (isCurrentStream()
+          ? (currentAnswer.value + pendingAnswerDelta)
+          : streamPendingDelta)
         const { text: cleanAnswer, thinking: trailingThinking } = extractThinkContent(rawAnswer)
-        if (trailingThinking && !currentThinking.value) {
-          sessionStore.addThinkingMessageTo(streamSessionId, currentRound.value, trailingThinking)
+        if (trailingThinking && !streamThinking) {
+          sessionStore.addThinkingMessageTo(streamSessionId, streamRound, trailingThinking)
         }
         // Write complete answer; remove any partial answer the session-switch handler
         // may have saved (to avoid duplicate assistant messages)
@@ -882,36 +909,44 @@ async function startAgentStream(content) {
           sources: eventSources,
           metrics: event.metrics || {},
         })
-        // Keep sources for streaming answer display (before next tick clears it)
-        currentAnswerSources.value = eventSources
-        currentAnswer.value = ''
-        currentThinking.value = ''
-        currentThinkingTimeMs.value = 0
-        thinkingStartTime.value = 0
-        // Scroll to bottom when answer is complete
-        nextTick(() => scrollToBottom())
+        // 只有当前流才更新展示层状态，避免旧后台流覆盖新会话的 UI
+        if (isCurrentStream()) {
+          flushPendingDelta()
+          currentAnswerSources.value = eventSources
+          currentAnswer.value = ''
+          pendingAnswerDelta = ''
+          currentThinking.value = ''
+          currentThinkingTimeMs.value = 0
+          thinkingStartTime.value = 0
+          // Scroll to bottom when answer is complete
+          nextTick(() => scrollToBottom())
+        }
       },
 
       onError(event) {
         console.error('Agent error:', event.message)
+        // 错误始终写入本次流所属会话；旧后台流不覆盖新会话的展示层状态
         sessionStore.addMessageTo(streamSessionId, 'assistant', `错误: ${event.message || '未知错误'}`)
       },
     })
   } catch (error) {
-    // Save partial thinking and answer before clearing
-    flushPendingDelta()
-    const partialThinking = currentThinking.value
-    const partialAnswer = currentAnswer.value
+    // 保存本次流的局部 partial 状态。旧后台流只写自己的会话，不碰当前 UI。
+    if (isCurrentStream()) flushPendingDelta()
+    const partialThinking = streamThinking
+    const partialAnswer = isCurrentStream()
+      ? currentAnswer.value
+      : streamPendingDelta
+    const partialThinkTime = streamThinkingStart ? Date.now() - streamThinkingStart : 0
 
-    isLoading.value = false
-    currentThinking.value = ''
-    currentThinkingTimeMs.value = 0
+    if (isCurrentStream()) {
+      currentThinking.value = ''
+      currentThinkingTimeMs.value = 0
+    }
 
     if (error.name === 'AbortError') {
       console.log('[ChatView] Request aborted')
       if (partialThinking) {
-        const thinkTime = thinkingStartTime.value ? Date.now() - thinkingStartTime.value : 0
-        sessionStore.addThinkingMessageTo(streamSessionId, currentRound.value, partialThinking, Math.round(thinkTime))
+        sessionStore.addThinkingMessageTo(streamSessionId, streamRound, partialThinking, Math.round(partialThinkTime))
       }
       if (partialAnswer) {
         sessionStore.addMessageTo(streamSessionId, 'assistant', partialAnswer + ' [已中断]')
@@ -919,18 +954,23 @@ async function startAgentStream(content) {
     } else {
       console.error('[ChatView] Agent chat error:', error)
       if (partialThinking) {
-        sessionStore.addThinkingMessageTo(streamSessionId, currentRound.value, partialThinking, 0)
+        sessionStore.addThinkingMessageTo(streamSessionId, streamRound, partialThinking, 0)
       }
       sessionStore.addMessageTo(streamSessionId, 'assistant', partialAnswer || `错误: ${error.message}`)
     }
   }
 
+  // 流结束（正常完成/出错/被中断）时，把仍未返回结果的工具调用标记为"已中断"，
+  // 避免它们永远停留在"执行中..."状态（始终写本次流所属会话）
+  sessionStore.finalizePendingToolCalls(streamSessionId)
+
+  // 只有当前活动流才能清理/更新全局 UI 状态与 AbortController；
+  // 旧后台流结束不能覆盖新流的 isLoading/stop 按钮等状态。
+  if (!isCurrentStream()) return
+
   abortController.value = null
   isLoading.value = false
   stopElapsedTicker()
-  // 流结束（正常完成/出错/被中断）时，把仍未返回结果的工具调用标记为"已中断"，
-  // 避免它们永远停留在"执行中..."状态
-  sessionStore.finalizePendingToolCalls(streamSessionId)
   nextTick(() => scrollToBottom())
 
   // Only process queue if still on the original session
@@ -1091,7 +1131,8 @@ function regenerateLast() {
   }
   if (userIdx === -1) return
   const content = msgs[userIdx].content
-  sessionStore.truncateMessages(session.id, userIdx)
+  // truncateMessages 的 fromIndex 是包含该索引的，+1 才能保留要重发的 user 消息
+  sessionStore.truncateMessages(session.id, userIdx + 1)
   startAgentStream(content)
 }
 

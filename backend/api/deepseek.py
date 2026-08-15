@@ -4,10 +4,9 @@ Uses DeepSeek's official API instead of SiliconFlow for better response speed.
 """
 
 import json
-import time
 import logging
-import asyncio
-from typing import List, Dict, Any, Optional
+import re as _re
+from typing import List, Dict, Any
 
 from backend import config
 
@@ -46,8 +45,6 @@ class ToolCall:
 # Some models embed reasoning inside <think...>...</think> tags
 # within the content field. This parser separates those tags from real content
 # in a streaming fashion, emitting each fragment as (type, text).
-
-import re as _re
 
 _THINK_OPEN_RE = _re.compile(r'<think[^>]*>', _re.IGNORECASE)
 _THINK_CLOSE_RE = _re.compile(r'</think\s*>', _re.IGNORECASE)

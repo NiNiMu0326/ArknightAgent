@@ -38,6 +38,18 @@ class TestCleanSql:
         assert cleaned.count("LIMIT") == 1
         assert "LIMIT 5" in cleaned
 
+    def test_existing_oversized_limit_is_capped(self):
+        cleaned = sq._clean_sql("SELECT name FROM operators LIMIT 100000")
+        assert f"LIMIT {sq.MAX_ROWS}" in cleaned
+
+    def test_quoted_unknown_table_rejected(self):
+        with pytest.raises(ValueError, match="不允许查询表"):
+            sq._clean_sql('SELECT * FROM "users"')
+
+    def test_quoted_allowed_table_passes(self):
+        cleaned = sq._clean_sql('SELECT * FROM "operators"')
+        assert "operators" in cleaned
+
     def test_strips_markdown_code_block(self):
         cleaned = sq._clean_sql("```sql\nSELECT name FROM operators LIMIT 1\n```")
         assert "```" not in cleaned

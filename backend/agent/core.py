@@ -107,17 +107,13 @@ def strip_think_tags(text: str) -> Tuple[str, str]:
     thinking = ""
     cleaned = text
 
-    # Handle <think>...</thinking> tags (DeepSeek native format)
-    think_pattern1 = re.compile(r'<think[^>]*>([\s\S]*?)</think\s*>', re.IGNORECASE)
-    for match in think_pattern1.finditer(cleaned):
+    # Handle <think>...</think> and <thinking>...</thinking> tags in one pass
+    think_pattern = re.compile(
+        r'<think(?:ing)?[^>]*>([\s\S]*?)</think(?:ing)?\s*>', re.IGNORECASE
+    )
+    for match in think_pattern.finditer(cleaned):
         thinking += match.group(1).strip()
-    cleaned = think_pattern1.sub('', cleaned).strip()
-
-    # Handle <thinking>...</thinking> tags
-    think_pattern2 = re.compile(r'<thinking[^>]*>([\s\S]*?)</thinking\s*>', re.IGNORECASE)
-    for match in think_pattern2.finditer(cleaned):
-        thinking += match.group(1).strip()
-    cleaned = think_pattern2.sub('', cleaned).strip()
+    cleaned = think_pattern.sub('', cleaned).strip()
 
     return cleaned, thinking
 
@@ -247,6 +243,47 @@ def detect_loop(messages: List[Dict], window: int = 3) -> bool:
     return len(recent_rounds) >= window and len(set(recent_rounds)) == 1
 
 
+# ===== Repeated Tool Call Warnings =====
+# 同一工具被重复调用达到阈值时，在下一轮 LLM 调用前注入逐步增强的提醒。
+REPEATED_TOOL_THRESHOLDS = (3, 5, 8)
+
+
+def _format_repeated_tool_reminder(counts: Dict[str, int]) -> str:
+    """Build an escalating reminder for tools that have been called too often.
+
+    Strengths: 3 (reminder) → 5 (warning) → 8 (hard stop).
+    """
+    if not counts:
+        return ""
+    max_count = max(counts.values())
+    if max_count < REPEATED_TOOL_THRESHOLDS[0]:
+        return ""
+
+    repeated = "、".join(
+        f"{name}({count}次)" for name, count in counts.items()
+        if count >= REPEATED_TOOL_THRESHOLDS[0]
+    )
+
+    if max_count >= REPEATED_TOOL_THRESHOLDS[2]:
+        return (
+            f"【严重警告】你已反复调用工具：{repeated}。"
+            "这已经严重影响回答效率，极可能陷入死循环。"
+            "立即停止调用这些工具，也不得再发起相同或相似参数的调用；"
+            "请直接基于已经获得的所有信息给出当前条件下的最佳回答。"
+        )
+    if max_count >= REPEATED_TOOL_THRESHOLDS[1]:
+        return (
+            f"【警告】你已多次调用工具：{repeated}。"
+            "除非下一个调用的参数与之前明显不同且确实必要，否则不要再调用这些工具。"
+            "请优先复用已有检索结果，直接回答用户问题。"
+        )
+    return (
+        f"【提醒】你已重复调用工具：{repeated}。"
+        "请先检查已有检索结果是否足够，避免无意义的重复调用；"
+        "如果信息已足够，请立即基于已有信息回答。"
+    )
+
+
 # ===== Tool Execution =====
 
 def _sanitize_unicode(obj: Any) -> Any:
@@ -285,7 +322,7 @@ async def execute_tool(registry: ToolRegistry, tool_call: ToolCall, session_id: 
 # ===== Agent Loop =====
 
 
-async def agent_loop(
+async def _agent_loop_unlocked(
     session_id: str,
     user_message: str,
     session_manager: SessionManager,
@@ -338,6 +375,8 @@ async def agent_loop(
     pending_thinking = ""  # Accumulated thinking content from current round
     # Track all sources collected from tool results during this session
     collected_sources = {}  # key (chunk_id or url) -> source dict
+    # Track tool call counts for escalating repeated-call reminders
+    tool_call_counts: Dict[str, int] = {}
 
     model_id = model_id or DEFAULT_MODEL
     model_info = get_model_info(model_id)
@@ -369,11 +408,14 @@ async def agent_loop(
             # Force flush: ensure thinking_start reaches the client immediately
             await asyncio.sleep(0)
 
-            # Collect streaming response
+            # Collect streaming response.
+            # content_delta 先缓存：流结束前不知道本轮是否会跟出 tool_calls，
+            # 若先发 answer_delta 再发 tool_calls_start 会破坏 SSE 事件时序。
             tool_calls = None
             final_content = ""
             final_reasoning = ""
             round_usage = None  # token usage for this round
+            pending_content_chunks: List[str] = []
             stream = client.chat_with_tools_stream(
                 messages=messages,
                 tools=tool_schemas,
@@ -389,8 +431,7 @@ async def agent_loop(
                     await asyncio.sleep(0)
 
                 elif etype == STREAM_EVENT_CONTENT_DELTA:
-                    yield format_answer_delta(event["delta"])
-                    await asyncio.sleep(0)
+                    pending_content_chunks.append(event["delta"])
 
                 elif etype == STREAM_EVENT_TOOL_CALLS:
                     # Model decided to use tools
@@ -439,6 +480,15 @@ async def agent_loop(
             yield format_thinking_done(complete_reasoning, round_num)
             await asyncio.sleep(0)
 
+        # 仅当本轮确实没有工具调用时才下发缓存的 answer_delta；
+        # 有工具调用时这段 content 只是工具轮的杂散前言，前端会在 tool_calls_start 丢弃。
+        if not tool_calls:
+            for chunk in pending_content_chunks:
+                if chunk:
+                    yield format_answer_delta(chunk)
+                    await asyncio.sleep(0)
+            pending_content_chunks = []
+
         # Check if model wants to use tools
         if not tool_calls:
             # Model decided to answer directly — content was already streamed
@@ -486,13 +536,19 @@ async def agent_loop(
         # Force flush: yield control to allow SSE event to be sent immediately
         await asyncio.sleep(0)
 
-        # Execute all tool_calls in parallel, each with individual timing
-        async def _execute_with_timing(tc: ToolCall):
-            """Execute a single tool and return (result, time_ms)."""
+        # 记录本轮各工具的调用次数，用于 3/5/8 次重复调用提醒
+        for tc in tool_calls:
+            tool_call_counts[tc.name] = tool_call_counts.get(tc.name, 0) + 1
+
+        # Execute all tool_calls in parallel, each with individual timing.
+        # 返回时携带 LLM 输出中的原始索引，再按索引排序，确保无论实际完成先后，
+        # 注入给 LLM 的 tool 消息顺序始终与 assistant.tool_calls 的输出顺序一致。
+        async def _execute_with_timing(index: int, tc: ToolCall):
+            """Execute a single tool and return (index, result, time_ms)."""
             start = time.time()
             result = await execute_tool(registry, tc, session_id=session_id)
             elapsed = (time.time() - start) * 1000
-            return result, elapsed
+            return index, result, elapsed
 
         # Notify frontend that tools are starting execution
         for tc in tool_calls:
@@ -501,11 +557,14 @@ async def agent_loop(
         await asyncio.sleep(0)
 
         timed_results = await asyncio.gather(
-            *[_execute_with_timing(tc) for tc in tool_calls]
+            *[_execute_with_timing(index, tc) for index, tc in enumerate(tool_calls)]
         )
+        # gather 本身按传入顺序返回，这里再显式按原始索引排序，避免未来实现变化
+        timed_results.sort(key=lambda item: item[0])
 
-        # Record each tool result and notify frontend
-        for tc, (result, elapsed_ms) in zip(tool_calls, timed_results):
+        # Record each tool result and notify frontend（严格按 LLM 输出顺序）
+        for index, (_, result, elapsed_ms) in enumerate(timed_results):
+            tc = tool_calls[index]
             session.add_tool_result(tc.id, result)
             # Log tool result summary
             result_summary = ""
@@ -555,7 +614,15 @@ async def agent_loop(
         # Inject grounding constraint as a system-level instruction (not stored in
         # session) so the LLM treats it as a directive, not as user input.
         messages = build_messages(session)
-        messages.insert(1, {"role": "system", "content": "基于以上检索结果回答用户问题。要求：只使用检索结果中的信息，不要编造检索结果中没有的信息。"})
+        transient_instructions = [
+            "基于以上检索结果回答用户问题。要求：只使用检索结果中的信息，不要编造检索结果中没有的信息。"
+        ]
+        repeated_reminder = _format_repeated_tool_reminder(tool_call_counts)
+        if repeated_reminder:
+            transient_instructions.append(repeated_reminder)
+            logger.info(f"[REPEATED TOOL] Round {round_num} reminder: {repeated_reminder}")
+        for offset, instruction in enumerate(transient_instructions, start=1):
+            messages.insert(offset, {"role": "system", "content": instruction})
 
     # Exceeded max rounds
     logger.warning(f"Max rounds ({max_rounds}) exceeded in session {session_id}")
@@ -564,3 +631,30 @@ async def agent_loop(
                            (time.time() - loop_start) * 1000, trace.total_llm_calls,
                            trace.total_tool_calls, trace.total_tokens, 0, "max_rounds", "max_rounds_exceeded")
     yield format_error("我无法在有限的步骤内完成回答，请尝试更具体的问题。")
+
+
+async def agent_loop(
+    session_id: str,
+    user_message: str,
+    session_manager: SessionManager,
+    model_id: str = None,
+    max_rounds: int = 15,
+) -> AsyncGenerator[str, None]:
+    """Serialize concurrent requests that target the same session.
+
+    同一会话并发请求会交错写入消息/工具结果，破坏 LLM 上下文；
+    这里用每会话锁保证同一时间只有一个 agent_loop 在写该会话。
+    """
+    lock = await session_manager.get_session_lock(session_id)
+    await lock.acquire()
+    try:
+        async for event in _agent_loop_unlocked(
+            session_id=session_id,
+            user_message=user_message,
+            session_manager=session_manager,
+            model_id=model_id,
+            max_rounds=max_rounds,
+        ):
+            yield event
+    finally:
+        lock.release()

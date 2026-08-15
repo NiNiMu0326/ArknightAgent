@@ -1,7 +1,7 @@
 import json
 import logging
 import networkx as nx
-from typing import Dict, List, Set, Optional
+from typing import Dict, List
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -28,9 +28,9 @@ class GraphBuilder:
         self.graph = nx.DiGraph()
 
         if not Path(self.entity_relations_path).exists():
-            print(f"Entity relations file not found: {self.entity_relations_path}")
-            print("Run python -m src.rag.graphrag.extractor first to build the graph.")
-            return self.graph
+            raise FileNotFoundError(
+                f"Entity relations file not found: {self.entity_relations_path}"
+            )
 
         with open(self.entity_relations_path, 'r', encoding='utf-8') as f:
             data = json.load(f)

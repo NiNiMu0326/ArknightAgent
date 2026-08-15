@@ -8,6 +8,10 @@ from typing import List, Dict, Any
 from backend import config
 from backend.api.base import create_http_session
 
+# 共享连接池：SiliconFlowClient 每次请求都会新建，复用同一个 Session
+# 才能让 urllib3 的连接池/重试配置真正生效
+_shared_session = create_http_session()
+
 
 class SiliconFlowClient:
     """Client for SiliconFlow API calls with connection pooling and retry logic."""
@@ -25,8 +29,8 @@ class SiliconFlowClient:
         self.base_url = config.SILICONFLOW_BASE_URL
         self.embedding_model = config.EMBEDDING_MODEL
         self.reranker_model = config.RERANKER_MODEL
-        # Create session with connection pooling and retry logic
-        self._session = create_http_session()
+        # Reuse the module-level session (connection pooling + retry)
+        self._session = _shared_session
 
     def embed(self, texts: List[str], model: str = None) -> List[List[float]]:
         """

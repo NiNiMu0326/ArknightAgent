@@ -1,4 +1,4 @@
-﻿"""
+"""
 Arknights RAG Backend - FastAPI Server
 Provides REST API for the frontend
 """
@@ -41,8 +41,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("arknights_rag")
 
+# 请求日志中需要脱敏的字段（防止密码/令牌进入日志）
+_SENSITIVE_LOG_FIELDS = {
+    "password", "old_password", "new_password", "confirm_password",
+    "token", "authorization", "api_key",
+}
+
+
+def _redact_sensitive(value: Any) -> Any:
+    """递归脱敏请求体，避免敏感字段写入日志。"""
+    if isinstance(value, dict):
+        return {
+            k: "***" if k.lower() in _SENSITIVE_LOG_FIELDS else _redact_sensitive(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
 from backend.config import (
-    BASE_DIR, CHUNKS_DIR, DATA_DIR,
+    CHUNKS_DIR, DATA_DIR,
     ENTITY_RELATIONS_FILE,
 )
 
@@ -142,8 +160,11 @@ class RequestLoggingMiddleware:
                 if body_chunks and method in ("POST", "PUT", "PATCH"):
                     body = b"".join(body_chunks)
                     try:
-                        body_json = json.loads(body)
-                        log_body = {k: (v if len(str(v)) < 200 else str(v)[:200] + "...") for k, v in body_json.items()}
+                        body_json = _redact_sensitive(json.loads(body))
+                        if isinstance(body_json, dict):
+                            log_body = {k: (v if len(str(v)) < 200 else str(v)[:200] + "...") for k, v in body_json.items()}
+                        else:
+                            log_body = body_json
                         body_info = f" body={json.dumps(log_body, ensure_ascii=False)}"
                     except Exception:
                         body_info = f" body_length={len(body)}"
@@ -336,7 +357,7 @@ async def get_chunk(collection: str, filename: str):
     """Get content of a specific chunk"""
     valid_collections = ["operators", "stories", "knowledge"]
     if collection not in valid_collections:
-        raise HTTPException(status_code=400, detail=f"Invalid collection")
+        raise HTTPException(status_code=400, detail="Invalid collection")
 
     # 防止路径穿越：解析后的路径必须仍位于该 collection 目录内
     try:
@@ -403,14 +424,34 @@ class SyncConversationsRequest(BaseModel):
     conversations: list
 
 
-def get_current_user(authorization: str = Header(None)):
-    """Extract current user from JWT token in Authorization header."""
+async def get_current_user(authorization: str = Header(None)):
+    """Extract current user from JWT token in Authorization header.
+
+    同时校验 token 中的 pw_changed_at 与数据库一致，实现修改密码后旧 token 失效。
+    """
     if not authorization or not authorization.startswith("Bearer "):
         return None
     token = authorization[7:]
     payload = decode_jwt(token)
     if not payload:
         return None
+
+    try:
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                "SELECT password_changed_at FROM users WHERE id = ?",
+                (payload.get("user_id"),)
+            )
+            row = await cursor.fetchone()
+            if not row or row["password_changed_at"] != payload.get("pw_changed_at"):
+                return None
+        finally:
+            await db.close()
+    except Exception as e:
+        logger.warning(f"[AUTH] Token verification against DB failed: {e}")
+        return None
+
     return payload
 
 
@@ -434,14 +475,17 @@ async def register(req: RegisterRequest):
             raise HTTPException(status_code=400, detail="该账号已被注册")
 
         pw_hash = hash_password(req.password)
+        # 注册时显式写入 password_changed_at，确保签发 token 里的 pw_changed_at
+        # 与数据库一致（get_current_user 会校验该字段实现改密后旧 token 失效）
+        password_changed_at = datetime.now(timezone.utc).isoformat()
         cursor = await db.execute(
-            "INSERT INTO users (account, username, password_hash) VALUES (?, ?, ?)",
-            (req.account, req.username.strip(), pw_hash)
+            "INSERT INTO users (account, username, password_hash, password_changed_at) VALUES (?, ?, ?, ?)",
+            (req.account, req.username.strip(), pw_hash, password_changed_at)
         )
         await db.commit()
         user_id = cursor.lastrowid
 
-        token = create_jwt(user_id, req.account, req.username.strip(), datetime.now(timezone.utc).isoformat())
+        token = create_jwt(user_id, req.account, req.username.strip(), password_changed_at)
         return {"token": token, "user": {"id": user_id, "account": req.account, "username": req.username.strip()}}
     finally:
         await db.close()
@@ -553,13 +597,19 @@ async def sync_conversations(req: SyncConversationsRequest, user: dict = Depends
             sid = conv.get("session_id")
             if not sid:
                 continue
-            cursor = await db.execute("SELECT session_id FROM conversations WHERE session_id = ?", (sid,))
-            exists = await cursor.fetchone()
-            if not exists:
+            cursor = await db.execute(
+                "SELECT user_id FROM conversations WHERE session_id = ?", (sid,)
+            )
+            existing = await cursor.fetchone()
+            if not existing:
                 await db.execute(
                     "INSERT INTO conversations (session_id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                     (sid, user["user_id"], conv.get("name", ""), conv.get("created_at", ""), conv.get("updated_at", ""))
                 )
+            elif existing["user_id"] != user["user_id"]:
+                # 不允许通过同步接口覆盖/注入其他用户的会话
+                logger.warning(f"[SYNC] Skipped conversation owned by another user: {sid}")
+                continue
             else:
                 await db.execute(
                     "UPDATE conversations SET name = ?, updated_at = ? WHERE session_id = ?",
@@ -679,8 +729,10 @@ async def agent_chat(req: AgentChatRequest):
 
 
 @app.get("/agent/session/{session_id}/messages")
-async def get_session_messages(session_id: str):
+async def get_session_messages(session_id: str, user: dict = Depends(get_current_user)):
     """Get session message history."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     session = await _session_manager.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found or expired")
@@ -695,8 +747,10 @@ async def delete_agent_session(session_id: str):
 
 
 @app.get("/agent/debug/trace")
-async def get_agent_debug_trace(session_id: str):
+async def get_agent_debug_trace(session_id: str, user: dict = Depends(get_current_user)):
     """Get Agent's complete tool call trace for debugging."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     session = await _session_manager.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found or expired")
@@ -724,13 +778,18 @@ async def get_agent_models():
 
 @app.get("/agent/traces")
 async def get_agent_traces(page: int = 1, limit: int = 20,
-                           status: str = None, model_id: str = None, q: str = None):
+                           status: str = None, model_id: str = None, q: str = None,
+                           user: dict = Depends(get_current_user)):
     """Get paginated local agent traces with optional filters.
 
     - status: exact match on status (success / error / loop_detected / max_rounds)
     - model_id: exact match on model_id
     - q: keyword fuzzy match on user_message
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    page = max(1, page)
+    limit = max(1, min(limit, 100))
     try:
         db = await get_db()
         try:
@@ -785,15 +844,19 @@ async def _export_traces_payload(trace_ids: Optional[List[int]] = None) -> JSONR
     """构建 traces 导出的 JSON 响应（选中导出与全部导出共用）。"""
     db = await get_db()
     try:
-        if trace_ids:
-            placeholders = ",".join("?" * len(trace_ids))
-            rows = await db.execute(
-                f"SELECT * FROM traces WHERE id IN ({placeholders}) ORDER BY created_at DESC",
-                trace_ids
-            )
+        if trace_ids is not None:
+            if not trace_ids:
+                traces = []
+            else:
+                placeholders = ",".join("?" * len(trace_ids))
+                rows = await db.execute(
+                    f"SELECT * FROM traces WHERE id IN ({placeholders}) ORDER BY created_at DESC",
+                    trace_ids
+                )
+                traces = [dict(r) for r in await rows.fetchall()]
         else:
             rows = await db.execute("SELECT * FROM traces ORDER BY created_at DESC")
-        traces = [dict(r) for r in await rows.fetchall()]
+            traces = [dict(r) for r in await rows.fetchall()]
     finally:
         await db.close()
 
@@ -810,10 +873,12 @@ async def _export_traces_payload(trace_ids: Optional[List[int]] = None) -> JSONR
 
 
 @app.post("/agent/traces/export")
-async def export_selected_traces(request: Request):
+async def export_selected_traces(request: Request, user: dict = Depends(get_current_user)):
     """Export selected (or all) local traces as a JSON file download.
     Request body (optional): {"trace_ids": [1, 2, 3]}
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     body = await request.json()
     trace_ids = body.get("trace_ids") if body else None
     try:
@@ -823,10 +888,12 @@ async def export_selected_traces(request: Request):
 
 
 @app.delete("/agent/traces")
-async def delete_selected_traces(request: Request):
+async def delete_selected_traces(request: Request, user: dict = Depends(get_current_user)):
     """Delete selected local traces by IDs.
     Request body: {"trace_ids": [1, 2, 3]}
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     body = await request.json()
     trace_ids = body.get("trace_ids", [])
     if not trace_ids:
@@ -847,8 +914,10 @@ async def delete_selected_traces(request: Request):
 
 
 @app.get("/agent/traces/export")
-async def export_all_traces():
+async def export_all_traces(user: dict = Depends(get_current_user)):
     """Export all local traces as a JSON file download."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     try:
         return await _export_traces_payload()
     except Exception as e:
@@ -856,15 +925,20 @@ async def export_all_traces():
 
 
 @app.get("/agent/traces/langfuse")
-async def get_langfuse_traces(page: int = 1, limit: int = 20):
+async def get_langfuse_traces(page: int = 1, limit: int = 20,
+                              user: dict = Depends(get_current_user)):
     """Proxy: fetch paginated traces from LangFuse Public API."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     from backend.observability.tracing import fetch_langfuse_traces
     return await fetch_langfuse_traces(page=page, limit=limit)
 
 
 @app.get("/agent/traces/summary")
-async def get_agent_traces_summary():
+async def get_agent_traces_summary(user: dict = Depends(get_current_user)):
     """Aggregated stats over local traces (for the observability dashboard)."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     try:
         db = await get_db()
         try:
@@ -910,8 +984,10 @@ async def get_agent_traces_summary():
 
 
 @app.get("/agent/traces/{trace_id}")
-async def get_agent_trace_detail(trace_id: int):
+async def get_agent_trace_detail(trace_id: int, user: dict = Depends(get_current_user)):
     """Get detailed trace info including tool call chain."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     db = await get_db()
     try:
         row = await db.execute("SELECT * FROM traces WHERE id = ?", (trace_id,))
@@ -935,8 +1011,10 @@ async def get_agent_trace_detail(trace_id: int):
 
 
 @app.get("/agent/traces/{trace_id}/export")
-async def export_single_trace(trace_id: int):
+async def export_single_trace(trace_id: int, user: dict = Depends(get_current_user)):
     """Export a single trace as a JSON file download."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     db = await get_db()
     try:
         row = await db.execute("SELECT * FROM traces WHERE id = ?", (trace_id,))
@@ -960,8 +1038,10 @@ async def export_single_trace(trace_id: int):
 
 
 @app.get("/agent/traces/langfuse/{trace_id}")
-async def get_langfuse_trace_detail(trace_id: str):
+async def get_langfuse_trace_detail(trace_id: str, user: dict = Depends(get_current_user)):
     """Proxy: fetch a single trace with full detail from LangFuse."""
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     from backend.observability.tracing import fetch_langfuse_trace_detail
     result = await fetch_langfuse_trace_detail(trace_id)
     if "error" in result and not any(k in result for k in ("traces", "id")):

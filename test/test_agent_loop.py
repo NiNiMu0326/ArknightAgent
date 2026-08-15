@@ -48,9 +48,11 @@ class FakeLLMClient:
         self.rounds = rounds
         self.fail = fail
         self.calls = 0
+        self.messages_sent = []
 
     def chat_with_tools_stream(self, messages, tools=None, temperature=0.3):
         self.calls += 1
+        self.messages_sent.append(messages)
         if self.fail:
             return self._failing_gen()
         idx = min(self.calls - 1, len(self.rounds) - 1)
@@ -81,7 +83,7 @@ def make_registry():
 
 
 def run_loop(rounds, user_message="银灰的技能是什么？", max_rounds=15,
-             session_id=None, fail=False):
+             session_id=None, fail=False, registry=None):
     """Run agent_loop with a scripted client; return (parsed_events, session_manager, final_session_id)."""
     client = FakeLLMClient(rounds, fail=fail)
 
@@ -90,7 +92,7 @@ def run_loop(rounds, user_message="银灰的技能是什么？", max_rounds=15,
         sid = session_id or await sm.create_session()
         out = []
         with patch.object(core, "get_llm_client", return_value=client), \
-             patch.object(core, "get_tool_registry", return_value=make_registry()):
+             patch.object(core, "get_tool_registry", return_value=registry or make_registry()):
             async for ev in agent_loop(sid, user_message, sm, max_rounds=max_rounds):
                 out.append(ev)
         return parse_sse(out), sm, sid, client.calls
@@ -112,6 +114,17 @@ def tool_call_round(query="银灰", call_id="c1"):
          "tool_calls": [ToolCall(id=call_id, name="arknights_rag_search",
                                  arguments=json.dumps({"query": query}))],
          "content": "", "reasoning_content": ""},
+    ]
+
+
+def content_then_tool_round(query="银灰", call_id="c1"):
+    """模型在工具调用前先输出了一段 content（杂散前言）。"""
+    return [
+        {"type": STREAM_EVENT_CONTENT_DELTA, "delta": "让我先查一下。"},
+        {"type": STREAM_EVENT_TOOL_CALLS,
+         "tool_calls": [ToolCall(id=call_id, name="arknights_rag_search",
+                                 arguments=json.dumps({"query": query}))],
+         "content": "让我先查一下。", "reasoning_content": ""},
     ]
 
 
@@ -216,6 +229,49 @@ class TestToolCallFlow:
         sources = done.get("sources", [])
         assert not any(s.get("chunk_id") == "operators_0001_01" for s in sources)
 
+    def test_no_answer_delta_before_tool_calls_when_content_precedes(self):
+        """工具轮前出现的 content 不能先发 answer_delta，SSE 顺序必须保持。"""
+        events, _, _, _ = run_loop([
+            content_then_tool_round(),
+            direct_answer_round("最终答案"),
+        ])
+        types = event_types(events)
+        first_answer = types.index("answer_delta")
+        assert types.index("tool_calls_start") < first_answer
+        assert types.index("tool_call_result") < first_answer
+
+    def test_tool_results_injected_in_llm_output_order(self):
+        """并行工具完成顺序与 LLM 输出顺序不同时，注入给 LLM 的顺序必须保持输出顺序。"""
+        registry = ToolRegistry()
+
+        async def slow_tool(args, session_id=""):
+            await asyncio.sleep(0.05)
+            return {"name": "slow"}
+
+        async def fast_tool(args, session_id=""):
+            return {"name": "fast"}
+
+        registry.register("slow_tool", slow_tool)
+        registry.register("fast_tool", fast_tool)
+
+        events, sm, sid, _ = run_loop([
+            [{"type": STREAM_EVENT_TOOL_CALLS,
+              "tool_calls": [
+                  ToolCall(id="c1", name="slow_tool", arguments=json.dumps({"q": 1})),
+                  ToolCall(id="c2", name="fast_tool", arguments=json.dumps({"q": 2})),
+              ],
+              "content": "", "reasoning_content": ""}],
+            direct_answer_round("回答"),
+        ], registry=registry)
+
+        async def get_tool_order():
+            session = await sm.get_session(sid)
+            return [m["tool_call_id"] for m in session.messages if m["role"] == "tool"]
+
+        tool_ids = asyncio.run(get_tool_order())
+        assert tool_ids == ["c1", "c2"]
+        assert [e for e in events if e["type"] == "answer_done"]
+
 
 # ============================================================
 # Safety mechanisms
@@ -244,6 +300,35 @@ class TestSafetyMechanisms:
         errors = [e for e in events if e["type"] == "error"]
         assert len(errors) == 1
         assert "AI 服务暂时不可用" in errors[0]["message"]
+
+    def test_repeated_tool_reminder_injected_at_third_call(self):
+        rounds = [
+            tool_call_round(query="q1", call_id="c1"),
+            tool_call_round(query="q2", call_id="c2"),
+            tool_call_round(query="q3", call_id="c3"),
+            direct_answer_round("最终答案"),
+        ]
+        client = FakeLLMClient(rounds)
+
+        async def _run():
+            sm = SessionManager()
+            sid = await sm.create_session()
+            out = []
+            with patch.object(core, "get_llm_client", return_value=client), \
+                 patch.object(core, "get_tool_registry", return_value=make_registry()):
+                async for ev in agent_loop(sid, "问题", sm):
+                    out.append(ev)
+            return sid
+
+        asyncio.run(_run())
+        assert client.calls == 4
+        last_messages = client.messages_sent[-1]
+        system_reminders = [
+            m["content"] for m in last_messages
+            if m["role"] == "system" and "提醒" in m["content"]
+        ]
+        assert system_reminders, "第4轮 LLM 调用应包含重复工具提醒"
+        assert "3次" in system_reminders[0]
 
     def test_session_renewal_when_expired(self):
         # Pass a session id that does not exist → agent creates a new one

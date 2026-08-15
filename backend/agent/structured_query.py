@@ -3,12 +3,11 @@ Structured query tool for Arknights data.
 Allows LLM to query operator/enemy data via SQL on pre-built SQLite tables.
 """
 
-import json
 import sqlite3
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -111,18 +110,32 @@ def _clean_sql(sql: str) -> str:
     if match:
         raise ValueError(f"不允许使用 {match.group(0)} 操作")
 
-    # Validate table names against allowlist
-    # Extract table names after FROM and JOIN clauses
+    # Validate table names against allowlist.
+    # 兼容双引号/方括号/反引号标识符，避免 "FROM \"users\"" 绕过白名单。
     table_refs = re.findall(
-        r'(?:FROM|JOIN)\s+(\w+)',
+        r'(?:FROM|JOIN)\s+("[^"]+"|\[[^\]]+\]|`[^`]+`|\w+)',
         cleaned, re.IGNORECASE,
     )
     for tbl in table_refs:
-        if tbl.lower() not in ALLOWED_TABLES:
-            raise ValueError(f"不允许查询表 '{tbl}'，只允许 {', '.join(sorted(ALLOWED_TABLES))} 表")
+        normalized = tbl.strip('"[]`')
+        if normalized.lower() not in ALLOWED_TABLES:
+            raise ValueError(
+                f"不允许查询表 '{normalized}'，只允许 {', '.join(sorted(ALLOWED_TABLES))} 表"
+            )
 
-    # Enforce LIMIT
-    if not re.search(r'\bLIMIT\b', cleaned, re.IGNORECASE):
+    # Enforce LIMIT: append when missing, cap when the LLM requests an unbounded result set
+    limit_match = re.search(r'\bLIMIT\s+(\d+)', cleaned, re.IGNORECASE)
+    if limit_match:
+        requested_limit = int(limit_match.group(1))
+        if requested_limit > MAX_ROWS:
+            cleaned = re.sub(
+                r'\bLIMIT\s+\d+',
+                f"LIMIT {MAX_ROWS}",
+                cleaned,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+    else:
         cleaned += f" LIMIT {MAX_ROWS}"
 
     return cleaned
@@ -147,7 +160,9 @@ async def execute_structured_query(arguments: Dict[str, Any], session_id: str = 
         return {"error": "结构化数据库未初始化，请先运行数据同步脚本"}
 
     try:
-        with sqlite3.connect(str(DB_PATH)) as conn:
+        # 只读连接：即使白名单被绕过，也无法执行写操作
+        db_uri = f"{DB_PATH.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(cleaned_sql)
             rows = [dict(row) for row in cursor.fetchall()]

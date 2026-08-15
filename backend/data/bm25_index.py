@@ -35,7 +35,7 @@ class BM25Indexer:
         self.corpus_size = len(corpus)
         tokenized_corpus = [_tokenize(doc) for doc in corpus]
         self.bm25 = BM25Okapi(tokenized_corpus, k1=self.k1, b=self.b)
-        self.doc_lengths = [len(_tokenize(doc)) for doc in corpus]
+        self.doc_lengths = [len(tokens) for tokens in tokenized_corpus]
         self.avgdl = sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0
         # Build corpus_ids if not provided (use indices as fallback)
         if corpus_ids is None:
@@ -49,8 +49,10 @@ class BM25Indexer:
             return []
         tokenized_query = _tokenize(query)
         scores = self.bm25.get_scores(tokenized_query)
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
-        return top_indices
+        # 过滤零分文档，避免完全不相关的 chunk 进入 RRF 融合污染结果
+        positive = [(i, score) for i, score in enumerate(scores) if score > 0]
+        positive.sort(key=lambda item: item[1], reverse=True)
+        return [i for i, _ in positive[:top_k]]
 
     def save(self, path: str):
         """Save index to file."""

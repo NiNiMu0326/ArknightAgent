@@ -14,7 +14,6 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
 from pydantic import Field
-import pydantic
 
 from backend.lc.embeddings import SiliconFlowEmbeddings
 from backend.data.bm25_index import BM25Indexer
@@ -26,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # ===== LRU Cache with 5-hour TTL for recall results =====
 _RECALL_CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
+_RECALL_CACHE_LOCK = threading.Lock()
 _RECALL_CACHE_TTL = 18000  # 5 hours
 _RECALL_CACHE_MAX_SIZE = 200
 
@@ -42,39 +42,41 @@ def _dict_to_doc(d: Dict) -> Document:
 
 def _get_recall_cache_key(
     query: str, top_k_per_channel: int, final_top_k: int,
-    vector_weight: float = 0.5,
+    vector_weight: float = 0.5, inner_top_k: int = 20,
 ) -> str:
-    key_str = f"{query}:{top_k_per_channel}:{final_top_k}:{vector_weight}"
+    key_str = f"{query}:{top_k_per_channel}:{final_top_k}:{vector_weight}:{inner_top_k}"
     return hashlib.md5(key_str.encode("utf-8")).hexdigest()
 
 
 def _get_cached_recall(cache_key: str) -> Optional[List[Dict]]:
-    if cache_key in _RECALL_CACHE:
-        timestamp, results = _RECALL_CACHE[cache_key]
-        if time.time() - timestamp < _RECALL_CACHE_TTL:
-            age_min = round((time.time() - timestamp) / 60, 1)
-            logger.info(f"[RecallCache] HIT (age={age_min}min, cache_size={len(_RECALL_CACHE)})")
-            return results
+    with _RECALL_CACHE_LOCK:
+        if cache_key in _RECALL_CACHE:
+            timestamp, results = _RECALL_CACHE[cache_key]
+            if time.time() - timestamp < _RECALL_CACHE_TTL:
+                age_min = round((time.time() - timestamp) / 60, 1)
+                logger.info(f"[RecallCache] HIT (age={age_min}min, cache_size={len(_RECALL_CACHE)})")
+                return results
+            else:
+                del _RECALL_CACHE[cache_key]
+                logger.info(f"[RecallCache] EXPIRED (cache_size={len(_RECALL_CACHE)})")
         else:
-            del _RECALL_CACHE[cache_key]
-            logger.info(f"[RecallCache] EXPIRED (cache_size={len(_RECALL_CACHE)})")
-    else:
-        logger.info(f"[RecallCache] MISS (cache_size={len(_RECALL_CACHE)})")
+            logger.info(f"[RecallCache] MISS (cache_size={len(_RECALL_CACHE)})")
     return None
 
 
 def _set_cached_recall(cache_key: str, results: List[Dict]) -> None:
-    if len(_RECALL_CACHE) >= _RECALL_CACHE_MAX_SIZE:
-        oldest_key = next(iter(_RECALL_CACHE))
-        del _RECALL_CACHE[oldest_key]
-    _RECALL_CACHE[cache_key] = (time.time(), results)
-    logger.info(f"[RecallCache] STORED {len(results)} docs (cache_size={len(_RECALL_CACHE)})")
+    with _RECALL_CACHE_LOCK:
+        if len(_RECALL_CACHE) >= _RECALL_CACHE_MAX_SIZE:
+            oldest_key = next(iter(_RECALL_CACHE))
+            del _RECALL_CACHE[oldest_key]
+        _RECALL_CACHE[cache_key] = (time.time(), results)
+        logger.info(f"[RecallCache] STORED {len(results)} docs (cache_size={len(_RECALL_CACHE)})")
 
 
 def clear_recall_cache() -> None:
     """Clear multi-channel recall cache. Call when indexes are rebuilt."""
-    global _RECALL_CACHE
-    _RECALL_CACHE.clear()
+    with _RECALL_CACHE_LOCK:
+        _RECALL_CACHE.clear()
     clear_vector_store_cache()
 
 
@@ -251,7 +253,8 @@ class MultiChannelRetriever(BaseRetriever):
     ) -> List[Document]:
         # Check recall cache first
         cache_key = _get_recall_cache_key(
-            query, self.top_k_per_channel, self.final_top_k, self.vector_weight
+            query, self.top_k_per_channel, self.final_top_k,
+            self.vector_weight, self.inner_top_k,
         )
         cached = _get_cached_recall(cache_key)
         if cached is not None:

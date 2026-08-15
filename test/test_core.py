@@ -21,6 +21,7 @@ from backend.agent.core import (
     strip_think_tags,
     detect_loop,
     validate_user_input,
+    _format_repeated_tool_reminder,
 )
 from backend.api.deepseek import ToolCall
 
@@ -233,6 +234,38 @@ class TestDetectLoop:
     def test_no_tool_calls_in_history(self):
         msgs = [{"role": "user", "content": "hello"}]
         assert detect_loop(msgs) is False
+
+
+# ============================================================
+# repeated tool call reminder
+# ============================================================
+
+class TestRepeatedToolReminder:
+    def test_below_threshold_is_empty(self):
+        assert _format_repeated_tool_reminder({"arknights_rag_search": 2}) == ""
+
+    def test_reminder_at_three(self):
+        msg = _format_repeated_tool_reminder({"arknights_rag_search": 3})
+        assert "提醒" in msg
+        assert "3次" in msg
+
+    def test_warning_at_five(self):
+        msg = _format_repeated_tool_reminder({"arknights_rag_search": 5})
+        assert "警告" in msg and "严重" not in msg
+        assert "5次" in msg
+
+    def test_hard_stop_at_eight(self):
+        msg = _format_repeated_tool_reminder({"arknights_rag_search": 8})
+        assert "严重警告" in msg
+        assert "立即停止" in msg
+
+    def test_only_repeated_tools_listed(self):
+        msg = _format_repeated_tool_reminder({
+            "arknights_rag_search": 6,
+            "web_search": 2,
+        })
+        assert "arknights_rag_search" in msg
+        assert "web_search" not in msg
 
 
 # ============================================================

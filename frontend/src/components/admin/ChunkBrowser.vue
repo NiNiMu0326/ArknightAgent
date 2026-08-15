@@ -80,6 +80,10 @@ const loadingChunks = ref(false)
 const loadingContent = ref(false)
 const chunkNavInput = ref(1)
 
+// 请求序号：快速切换集合/文档时，旧请求返回不能覆盖新状态
+let chunksRequestSeq = 0
+let contentRequestSeq = 0
+
 // 文档列表内联过滤：搜索框输入直接筛选下方常驻列表
 const displayedChunks = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -109,35 +113,42 @@ watch(() => [props.initialCollection, props.initialChunk], ([collection, chunk])
 })
 
 async function loadChunks() {
+  const seq = ++chunksRequestSeq
+  const collection = chunkCollection.value
   loadingChunks.value = true
   chunkSearch.value = ''
   searchQuery.value = ''
   try {
-    const newChunks = await api.getChunks(chunkCollection.value)
+    const newChunks = await api.getChunks(collection)
+    if (seq !== chunksRequestSeq) return
     // 新数据到了才替换，避免中间空白
     chunks.value = newChunks
     if (newChunks.length > 0) {
       // 选中第一个，内容在后台异步加载
-      selectChunk(newChunks[0])
+      selectChunk(newChunks[0], collection)
     } else {
       selectedChunk.value = null
       selectedChunkContent.value = ''
     }
   } catch (e) {
+    if (seq !== chunksRequestSeq) return
     // 加载失败不清空已有数据
     if (chunks.value.length === 0) {
       chunks.value = []
       selectedChunk.value = null
       selectedChunkContent.value = ''
     }
+  } finally {
+    if (seq === chunksRequestSeq) loadingChunks.value = false
   }
-  loadingChunks.value = false
 }
 
 async function loadChunksForCollection(collection, targetChunk) {
+  const seq = ++chunksRequestSeq
   loadingChunks.value = true
   try {
     const newChunks = await api.getChunks(collection)
+    if (seq !== chunksRequestSeq) return
     chunks.value = newChunks
     // Extract filename part from chunk_id like "operators_char_103_angel" -> "char_103_angel"
     const filenamePart = targetChunk.replace(/^(operators|stories|knowledge)_/, '')
@@ -147,26 +158,32 @@ async function loadChunksForCollection(collection, targetChunk) {
       c.name === filenamePart
     )
     if (found) {
-      await selectChunk(found)
+      selectChunk(found, collection)
     } else if (newChunks.length > 0) {
-      await selectChunk(newChunks[0])
+      selectChunk(newChunks[0], collection)
     }
   } catch (e) {
+    if (seq !== chunksRequestSeq) return
     console.error('Failed to load chunks for direct nav:', e)
+  } finally {
+    if (seq === chunksRequestSeq) loadingChunks.value = false
   }
-  loadingChunks.value = false
 }
 
-async function selectChunk(chunk) {
+async function selectChunk(chunk, collection = chunkCollection.value) {
+  const seq = ++contentRequestSeq
   selectedChunk.value = chunk
   loadingContent.value = true
   try {
-    const result = await api.getChunk(chunkCollection.value, chunk.filename)
+    const result = await api.getChunk(collection, chunk.filename)
+    if (seq !== contentRequestSeq) return
     selectedChunkContent.value = result.content
   } catch (e) {
+    if (seq !== contentRequestSeq) return
     selectedChunkContent.value = '加载失败'
+  } finally {
+    if (seq === contentRequestSeq) loadingContent.value = false
   }
-  loadingContent.value = false
   const idx = chunks.value.findIndex(c => c.filename === chunk.filename)
   if (idx >= 0) chunkNavInput.value = idx + 1
 }

@@ -1,3 +1,5 @@
+import re
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -50,43 +52,58 @@ class LRUCache:
         return len(self._cache)
 
 
+# 进程级共享缓存：ParentDocumentRetriever 每次工具调用都会新建实例，
+# 若缓存挂在实例上会在请求结束后立即失效，导致每次检索都重新扫描/读取文件。
+_PARENT_DOC_CACHE = LRUCache(max_size=100, ttl_seconds=18000)
+_PARENT_DOC_CACHE_LOCK = threading.Lock()
+_SOURCE_INDEX_CACHE: Dict[str, tuple] = {}
+_SOURCE_INDEX_CACHE_LOCK = threading.Lock()
+_SOURCE_INDEX_CACHE_TTL = 3600  # 1 hour TTL
+
+# FAISS 构建时把 chunk 文件名（如 operators_0001_01.md）写进了 source_file，
+# 但真正的父文档位于 data/{source}/ 下。命中这种元数据时改用 chunk_id 反查父文件。
+_CHUNK_FILENAME_RE = re.compile(r"^(operators|stories)_\d{4}(?:_\d{2})*\.(?:md|txt)$")
+
+
+def _looks_like_chunk_filename(source_file: str, source: str) -> bool:
+    """Return True if source_file is a chunk artifact name for the given source."""
+    return bool(_CHUNK_FILENAME_RE.match(source_file)) and source_file.startswith(f"{source}_")
+
+
 class ParentDocumentRetriever:
     def __init__(self, chunks_dir: str = None, data_dir: str = None):
         from backend import config as _cfg
         self.chunks_dir = chunks_dir or str(_cfg.CHUNKS_DIR)
         self.data_dir = data_dir or str(_cfg.DATA_DIR)
-        # LRU cache for loaded parent documents (max 100 entries, 5 hour TTL)
-        # 5 hours = 5 * 60 * 60 = 18000 seconds
-        self._doc_cache = LRUCache(max_size=100, ttl_seconds=18000)
-        # Cache for operator index mapping (file_idx -> filename) with 1 hour TTL
-        self._operators_index_cache = None
-        self._operators_index_timestamp = None
-        self._stories_index_cache = None
-        self._stories_index_timestamp = None
-        self._INDEX_CACHE_TTL = 3600  # 1 hour TTL
+        # Backward-compatible alias for tests; actual cache is process-wide above.
+        self._doc_cache = _PARENT_DOC_CACHE
 
-    def _build_source_index(self, source: str, cache_attr: str, ts_attr: str) -> Dict[int, str]:
+    def _build_source_index(self, source: str, cache_attr: str = "", ts_attr: str = "") -> Dict[int, str]:
         """Build mapping from document index to source filename.
 
         Files are sorted alphabetically and indexed starting from 1.
-        Cached per-source with configurable TTL.
+        The cache is process-wide (keyed by resolved source directory), because
+        this retriever is instantiated on every tool call.
         """
-        current_time = time.time()
-        cached = getattr(self, cache_attr, None)
-        cached_ts = getattr(self, ts_attr, None)
-        if cached is not None and cached_ts is not None and current_time - cached_ts < self._INDEX_CACHE_TTL:
-            return cached
-
         source_dir = Path(self.data_dir) / source
+        cache_key = str(source_dir.resolve())
+
+        with _SOURCE_INDEX_CACHE_LOCK:
+            cached = _SOURCE_INDEX_CACHE.get(cache_key)
+            if cached is not None:
+                cached_index, cached_ts = cached
+                if time.time() - cached_ts < _SOURCE_INDEX_CACHE_TTL:
+                    return cached_index
+
         if not source_dir.exists():
-            setattr(self, cache_attr, {})
-            setattr(self, ts_attr, current_time)
+            with _SOURCE_INDEX_CACHE_LOCK:
+                _SOURCE_INDEX_CACHE[cache_key] = ({}, time.time())
             return {}
 
         files = sorted([f.name for f in source_dir.glob('*.md') if f.name.endswith('.md')])
         index = {i + 1: f for i, f in enumerate(files)}
-        setattr(self, cache_attr, index)
-        setattr(self, ts_attr, current_time)
+        with _SOURCE_INDEX_CACHE_LOCK:
+            _SOURCE_INDEX_CACHE[cache_key] = (index, time.time())
         return index
 
     def _get_parent_file(self, chunk_id: str, source: str) -> str:
@@ -134,14 +151,8 @@ class ParentDocumentRetriever:
             Full content of the parent document, or chunk content if not found.
         """
         metadata = chunk.get('metadata', {})
+        chunk_id = chunk.get('chunk_id', '')
         source_file = metadata.get('source_file', '')
-
-        # If no source_file in metadata, try to derive from chunk_id
-        if not source_file:
-            source_file = self._get_parent_file(chunk.get('chunk_id', ''), source)
-
-        if not source_file:
-            return chunk.get('content', '')
 
         # Build path to original source
         if source == 'operators':
@@ -151,17 +162,32 @@ class ParentDocumentRetriever:
         else:
             return chunk.get('content', '')
 
+        # FAISS 索引把 chunk 文件名写进了 source_file，真正的父文档在 data/{source}/ 下，
+        # 这里无法命中时要回退到 chunk_id -> data 文件映射。
+        if source_file and (source_dir / source_file).exists():
+            pass
+        elif source_file and _looks_like_chunk_filename(source_file, source):
+            derived = self._get_parent_file(chunk_id, source)
+            if derived:
+                source_file = derived
+        elif not source_file:
+            source_file = self._get_parent_file(chunk_id, source)
+
+        if not source_file:
+            return chunk.get('content', '')
+
         source_path = source_dir / source_file
         if source_path.exists():
-            # Check cache first
-            cache_key = f"{source}:{source_file}"
-            cached = self._doc_cache.get(cache_key)
+            cache_key = str(source_path)
+            with _PARENT_DOC_CACHE_LOCK:
+                cached = self._doc_cache.get(cache_key)
             if cached is not None:
                 return cached
 
             with open(source_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            self._doc_cache.set(cache_key, content)
+            with _PARENT_DOC_CACHE_LOCK:
+                self._doc_cache.set(cache_key, content)
             return content
 
         return chunk.get('content', '')

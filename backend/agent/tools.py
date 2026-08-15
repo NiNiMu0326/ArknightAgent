@@ -3,7 +3,6 @@ Tool definitions and execution for AgenticRAG.
 Defines tool schemas and dispatches tool calls to implementations.
 """
 
-import json
 import logging
 from typing import Dict, List, Any, Optional, Callable
 

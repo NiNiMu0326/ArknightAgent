@@ -141,6 +141,7 @@ class SessionManager:
 
     def __init__(self, max_sessions: int = 1000, ttl_seconds: int = 3600):
         self._sessions: Dict[str, Session] = {}
+        self._session_locks: Dict[str, asyncio.Lock] = {}
         self._max_sessions = max_sessions
         self._ttl = ttl_seconds
         self._lock = asyncio.Lock()
@@ -157,6 +158,7 @@ class SessionManager:
             if len(self._sessions) >= self._max_sessions:
                 oldest_id = min(self._sessions, key=lambda k: self._sessions[k].last_active)
                 del self._sessions[oldest_id]
+                self._session_locks.pop(oldest_id, None)
                 self._evict_web_search_seen(oldest_id)
                 logger.info(f"[SESSION] Evicted oldest session: {oldest_id}")
 
@@ -178,6 +180,7 @@ class SessionManager:
             idle = time.time() - session.last_active
             if idle > self._ttl:
                 del self._sessions[session_id]
+                self._session_locks.pop(session_id, None)
                 self._evict_web_search_seen(session_id)
                 logger.warning(f"[SESSION] Expired: {session_id} (idle={idle:.0f}s, ttl={self._ttl}s)")
                 return None
@@ -186,17 +189,22 @@ class SessionManager:
             logger.debug(f"[SESSION] Found: {session_id} (idle={idle:.0f}s, messages={len(session.messages)})")
             return session
 
+    async def get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return a per-session lock used to serialize concurrent agent requests."""
+        async with self._lock:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._session_locks[session_id] = lock
+            return lock
+
     async def delete_session(self, session_id: str):
         """Delete a session."""
         async with self._lock:
             self._sessions.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
             logger.info(f"Deleted session: {session_id}")
-        # Clean up web search dedup state
-        try:
-            from backend.agent.tool_implementations import clear_web_search_seen
-            clear_web_search_seen(session_id)
-        except ImportError:
-            pass
+        self._evict_web_search_seen(session_id)
 
     async def _maybe_cleanup(self):
         """Periodically clean up expired sessions."""
@@ -212,6 +220,7 @@ class SessionManager:
                     expired.append(sid)
             for sid in expired:
                 del self._sessions[sid]
+                self._session_locks.pop(sid, None)
 
         if expired:
             for sid in expired:

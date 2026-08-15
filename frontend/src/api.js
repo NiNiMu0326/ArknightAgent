@@ -178,18 +178,24 @@ export const api = {
     if (filters.status) params.set('status', filters.status)
     if (filters.modelId) params.set('model_id', filters.modelId)
     if (filters.q) params.set('q', filters.q)
-    const response = await fetch(`${API_BASE}/agent/traces?${params}`)
+    const response = await fetch(`${API_BASE}/agent/traces?${params}`, {
+      headers: getAuthHeaders(),
+    })
     return response.json()
   },
 
   async getTraceSummary() {
-    const response = await fetch(`${API_BASE}/agent/traces/summary`)
+    const response = await fetch(`${API_BASE}/agent/traces/summary`, {
+      headers: getAuthHeaders(),
+    })
     if (!response.ok) throw new Error('获取 trace 统计失败')
     return response.json()
   },
 
   async getTraceDetail(traceId) {
-    const response = await fetch(`${API_BASE}/agent/traces/${traceId}`)
+    const response = await fetch(`${API_BASE}/agent/traces/${traceId}`, {
+      headers: getAuthHeaders(),
+    })
     if (!response.ok) throw new Error('获取 trace 详情失败')
     return response.json()
   },
@@ -234,12 +240,16 @@ export const api = {
 
   // LangFuse traces (proxied)
   async getLangfuseTraces(page = 1, limit = 20) {
-    const response = await fetch(`${API_BASE}/agent/traces/langfuse?page=${page}&limit=${limit}`)
+    const response = await fetch(`${API_BASE}/agent/traces/langfuse?page=${page}&limit=${limit}`, {
+      headers: getAuthHeaders(),
+    })
     return response.json()
   },
 
   async getLangfuseTraceDetail(traceId) {
-    const response = await fetch(`${API_BASE}/agent/traces/langfuse/${traceId}`)
+    const response = await fetch(`${API_BASE}/agent/traces/langfuse/${traceId}`, {
+      headers: getAuthHeaders(),
+    })
     if (!response.ok) throw new Error('获取 LangFuse trace 详情失败')
     return response.json()
   },
@@ -259,7 +269,7 @@ export const api = {
   async createAgentSession() {
     const response = await fetch(`${API_BASE}/agent/session`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(true),
     })
     if (!response.ok) throw new Error('Failed to create session')
     return response.json()
@@ -268,19 +278,24 @@ export const api = {
   async deleteAgentSession(sessionId) {
     const response = await fetch(`${API_BASE}/agent/session/${sessionId}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     })
     if (!response.ok) throw new Error('Failed to delete session')
     return response.json()
   },
 
   async getModels() {
-    const response = await fetch(`${API_BASE}/agent/models`)
+    const response = await fetch(`${API_BASE}/agent/models`, {
+      headers: getAuthHeaders(),
+    })
     if (!response.ok) throw new Error('Failed to get models')
     return response.json()
   },
 
   async getAgentSessionMessages(sessionId) {
-    const response = await fetch(`${API_BASE}/agent/session/${sessionId}/messages`)
+    const response = await fetch(`${API_BASE}/agent/session/${sessionId}/messages`, {
+      headers: getAuthHeaders(),
+    })
     if (!response.ok) throw new Error('Failed to get messages')
     return response.json()
   },
@@ -307,7 +322,7 @@ export const api = {
 
     const response = await fetch(`${API_BASE}/agent/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(true),
       body: JSON.stringify(body),
       signal,
     })
@@ -328,6 +343,21 @@ export const api = {
     let buffer = ''
     const callbacks = { onNewSessionId, onThinkingStart, onThinkingDelta, onThinkingDone, onToolCallsStart, onToolExecuting, onToolCallResult, onAnswerDelta, onAnswerDone, onError }
 
+    const parseLine = (line) => {
+      const trimmed = line.trim()
+      // 兼容标准 SSE `data:` 与后端 `data: `（带空格）两种格式
+      if (!trimmed.startsWith('data:')) return
+      const jsonStr = trimmed.slice(5).trim()
+      if (!jsonStr) return
+
+      try {
+        const event = JSON.parse(jsonStr)
+        _dispatchSSEEvent(event, callbacks)
+      } catch (e) {
+        console.warn('Failed to parse SSE event:', jsonStr, e)
+      }
+    }
+
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -336,32 +366,13 @@ export const api = {
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const jsonStr = line.slice(6).trim()
-        if (!jsonStr) continue
-
-        try {
-          const event = JSON.parse(jsonStr)
-          _dispatchSSEEvent(event, callbacks)
-        } catch (e) {
-          console.warn('Failed to parse SSE event:', jsonStr, e)
-        }
-      }
+      for (const line of lines) parseLine(line)
     }
 
-    // Process any remaining data in buffer after stream ends
-    if (buffer.trim().startsWith('data: ')) {
-      const jsonStr = buffer.trim().slice(6).trim()
-      if (jsonStr) {
-        try {
-          const event = JSON.parse(jsonStr)
-          _dispatchSSEEvent(event, callbacks)
-        } catch (e) {
-          console.warn('Failed to parse final SSE event:', jsonStr, e)
-        }
-      }
-    }
+    // Flush multi-byte UTF-8 sequences held by the decoder, then process the
+    // remaining partial line (if any) after the stream ends.
+    buffer += decoder.decode()
+    if (buffer.trim()) parseLine(buffer)
   }
 }
 

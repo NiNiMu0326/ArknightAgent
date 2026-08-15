@@ -439,11 +439,11 @@
     </template>
 
     <!-- 确认弹窗 -->
-    <div class="modal-overlay" :class="{ active: showConfirmModal }" @click.self="showConfirmModal = false">
+    <div class="modal-overlay" :class="{ active: showConfirmModal }" @click.self="confirmCancel">
       <div class="modal-content modal-sm">
         <div class="modal-header">
           <h2>{{ confirmTitle }}</h2>
-          <button class="modal-close" @click="showConfirmModal = false">&times;</button>
+          <button class="modal-close" @click="confirmCancel">&times;</button>
         </div>
         <div class="modal-body">
           <p>{{ confirmMessage }}</p>
@@ -458,7 +458,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onDeactivated, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onDeactivated, onActivated, onUnmounted } from 'vue'
 import { api, debounce, downloadBlob } from '../../api'
 import { useToastStore } from '../../stores/toast'
 
@@ -517,11 +517,19 @@ let autoRefreshTimer = null
 onMounted(() => {
   // 首次进入，先静默加载本地 traces 获取 langfuse 状态，再按来源加载
   loadTracesSilent()
-  autoRefreshTimer = setInterval(() => refreshTraces(true), 10000)
+  startAutoRefresh()
 })
 
 onDeactivated(stopAutoRefresh)
 onUnmounted(stopAutoRefresh)
+
+// keep-alive 切走再切回后重启定时器（stopAutoRefresh 只在 deactivated 执行）
+onActivated(startAutoRefresh)
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) return
+  autoRefreshTimer = setInterval(() => refreshTraces(true), 10000)
+}
 
 function stopAutoRefresh() {
   if (autoRefreshTimer) {
@@ -972,12 +980,18 @@ function showConfirm(title, message) {
 
 function confirmOk() {
   showConfirmModal.value = false
-  if (confirmResolve.value) confirmResolve.value(true)
+  if (confirmResolve.value) {
+    confirmResolve.value(true)
+    confirmResolve.value = null
+  }
 }
 
 function confirmCancel() {
   showConfirmModal.value = false
-  if (confirmResolve.value) confirmResolve.value(false)
+  if (confirmResolve.value) {
+    confirmResolve.value(false)
+    confirmResolve.value = null
+  }
 }
 </script>
 

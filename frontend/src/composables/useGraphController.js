@@ -32,6 +32,9 @@ function isEntitiesEmpty(entities) {
 const graphData = ref({ entities: {}, relations: [] })
 const selectedNodes = ref([])
 const selectedRelations = ref([])
+// null/未启用：显示全部关系；用户点过关系 chip 后启用筛选，
+// 此时 selectedRelations 为空数组表示“不显示任何关系”
+const relationFilterActive = ref(false)
 const neighborLevel = ref(1)
 const searchQuery = ref('')
 const searchResults = ref([])
@@ -110,6 +113,7 @@ export function useGraphController() {
   function clearSelection() {
     selectedNodes.value = []
     selectedRelations.value = []
+    relationFilterActive.value = false
     availableRelations.value = []
     selectedEdge.value = null
   }
@@ -176,11 +180,13 @@ export function useGraphController() {
     } else {
       selectedRelations.value.push(rel)
     }
+    relationFilterActive.value = true
   }
 
   function updateAvailableRelations() {
     if (selectedNodes.value.length === 0) {
       availableRelations.value = []
+      relationFilterActive.value = false
       return
     }
     const nodeSet = new Set(selectedNodes.value)
@@ -191,7 +197,8 @@ export function useGraphController() {
       }
     })
     availableRelations.value = Array.from(relationTypes).sort((a, b) => a.localeCompare(b))
-    // Default: select all
+    // 选点变化时默认显示全部关系，重置筛选开关
+    relationFilterActive.value = false
     selectedRelations.value = [...availableRelations.value]
   }
 
@@ -205,6 +212,7 @@ export function useGraphController() {
     graphData,
     selectedNodes,
     selectedRelations,
+    relationFilterActive,
     neighborLevel,
     searchQuery,
     searchResults,

@@ -10,9 +10,15 @@ export const useSettingsStore = defineStore('settings', () => {
   function loadSettings() {
     const saved = localStorage.getItem('arknights_rag_settings')
     if (saved) {
-      const settings = JSON.parse(saved)
-      theme.value = settings.theme || 'dark'
-      currentModel.value = settings.currentModel || ''
+      try {
+        const settings = JSON.parse(saved)
+        theme.value = settings.theme || 'dark'
+        currentModel.value = settings.currentModel || ''
+      } catch (e) {
+        console.warn('Failed to parse settings from localStorage:', e)
+        theme.value = 'dark'
+        currentModel.value = ''
+      }
     }
   }
 

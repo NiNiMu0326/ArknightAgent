@@ -95,6 +95,28 @@ export const useSessionStore = defineStore('sessions', () => {
     }))
   }
 
+  // 服务端同步去抖：流式期间 saveSessions 会被频繁调用（每轮思考/工具/回答），
+  // 避免每次都全量序列化并请求 /conversations/sync
+  let serverSyncTimer = null
+  let pendingServerSyncPayload = null
+
+  function scheduleServerSync(payload) {
+    pendingServerSyncPayload = payload
+    if (serverSyncTimer) return
+    serverSyncTimer = setTimeout(async () => {
+      serverSyncTimer = null
+      const toSync = pendingServerSyncPayload
+      pendingServerSyncPayload = null
+      const auth = useAuthStore()
+      if (!auth.isLoggedIn) return
+      try {
+        await api.syncConversations(toSync)
+      } catch (e) {
+        console.warn('Failed to sync sessions to server:', e)
+      }
+    }, 800)
+  }
+
   async function saveSessions() {
     const toSave = {}
     Object.keys(sessions.value).forEach(id => {
@@ -104,18 +126,22 @@ export const useSessionStore = defineStore('sessions', () => {
     })
 
     // Always save to localStorage as cache
-    localStorage.setItem('arknights_rag_sessions', JSON.stringify(toSave))
-    if (currentSessionId.value && !_isEmptySession(sessions.value[currentSessionId.value])) {
-      localStorage.setItem('arknights_rag_last_session', currentSessionId.value)
+    try {
+      localStorage.setItem('arknights_rag_sessions', JSON.stringify(toSave))
+      if (currentSessionId.value && !_isEmptySession(sessions.value[currentSessionId.value])) {
+        localStorage.setItem('arknights_rag_last_session', currentSessionId.value)
+      }
+    } catch (e) {
+      console.warn('Failed to save sessions to localStorage:', e)
     }
 
-    // Sync to server if logged in
+    // Sync to server if logged in（去抖合并高频调用）
     const authStore = useAuthStore()
     if (authStore.isLoggedIn) {
       try {
-        await api.syncConversations(_serializeSessionsForSync(toSave))
+        scheduleServerSync(_serializeSessionsForSync(toSave))
       } catch (e) {
-        console.warn('Failed to sync sessions to server:', e)
+        console.warn('Failed to serialize sessions for server sync:', e)
       }
     }
   }

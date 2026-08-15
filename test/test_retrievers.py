@@ -86,6 +86,11 @@ class TestRecallCache:
         k2 = _get_recall_cache_key("hello", 5, 10, 0.5)
         assert k1 == k2
 
+    def test_cache_key_includes_inner_top_k(self):
+        k1 = _get_recall_cache_key("hello", 5, 10, 0.5, 20)
+        k2 = _get_recall_cache_key("hello", 5, 10, 0.5, 40)
+        assert k1 != k2
+
     def test_cache_miss(self):
         result = _get_cached_recall("nonexistent_key")
         assert result is None

@@ -164,6 +164,13 @@ class TestGetParentContent:
         chunk = {"chunk_id": "badid", "content": "原始片段", "metadata": {}}
         assert retriever.get_parent_content(chunk, "operators") == "原始片段"
 
+    def test_faiss_chunk_filename_falls_back_to_chunk_id(self, pdr_env):
+        """FAISS 元数据里的 source_file 是 chunk 文件名，应回退用 chunk_id 找父文档。"""
+        retriever, _ = pdr_env
+        chunk = {"chunk_id": "operators_0002_01", "content": "片段",
+                 "metadata": {"source_file": "operators_0002_01.md"}}
+        assert retriever.get_parent_content(chunk, "operators") == "银灰的完整档案"
+
     def test_falls_back_when_file_missing_on_disk(self, pdr_env):
         retriever, _ = pdr_env
         chunk = {"chunk_id": "operators_0001_01", "content": "原始片段",

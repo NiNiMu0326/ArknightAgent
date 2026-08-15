@@ -29,7 +29,11 @@ def search(query: str, limit: int = 5) -> List[Dict[str, str]]:
     tavily_key = getattr(config, 'TAVILY_API_KEY', None)
     if tavily_key:
         try:
-            return _search_tavily(query, limit, tavily_key)
+            results = _search_tavily(query, limit, tavily_key)
+            # Tavily 正常返回空结果时也应尝试 DDG 兜底
+            if results:
+                return results
+            logger.info("Tavily returned no results, falling back to DuckDuckGo")
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}, falling back to DuckDuckGo")
 

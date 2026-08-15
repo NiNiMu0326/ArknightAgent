@@ -147,7 +147,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { api } from '../../api'
 
 const stats = ref(null)
@@ -204,6 +204,11 @@ const allRelationTypes = computed(() => {
 
 const relationPage = ref(1)
 const totalRelationPages = computed(() => Math.ceil(allRelationTypes.value.length / 5) || 1)
+
+// 数据变少时夹紧页码，避免出现空分页（如 2 / 1）
+watch(totalRelationPages, (total) => {
+  if (relationPage.value > total) relationPage.value = total
+})
 
 const pagedRelations = computed(() => {
   const start = (relationPage.value - 1) * 5

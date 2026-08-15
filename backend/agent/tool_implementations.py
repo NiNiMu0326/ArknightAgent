@@ -3,106 +3,122 @@ Tool implementations for AgenticRAG.
 Each function takes a dict of arguments and returns a result.
 """
 
-import json
+import asyncio
 import logging
-import warnings
+import threading
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
+# search_mode -> RRF vector_weight
+# Higher vector_weight = more semantic; lower = more BM25 keyword
+_MODE_WEIGHTS = {
+    "precise": 0.25,    # Heavy BM25 for exact keyword matching (stats, skill names)
+    "semantic": 0.75,   # Heavy vector for meaning-based queries (lore, relationships)
+    "balanced": 0.5,    # Default even split
+}
+
+_MAX_RAG_TOP_K = 20  # 防止 LLM 传入超大 top_k 造成 API 成本与响应体积失控
+
+
+def _run_rag_search_sync(query: str, top_k: int, vector_weight: float, enable_parent_expansion: bool) -> List[Dict]:
+    """Blocking implementation of arknights_rag_search (runs in a worker thread)."""
+    from backend.rag.retrievers import MultiChannelRetriever
+    from backend.lc.embeddings import SiliconFlowEmbeddings
+    from backend.lc.reranker import SiliconFlowReranker
+    from backend.rag.parent_document import ParentDocumentRetriever
+    from backend import config
+
+    # Load BM25 indexes (lazy, cached)
+    bm25_indexes = _get_bm25_indexes()
+
+    # Multi-channel retrieval
+    embeddings = SiliconFlowEmbeddings(api_key=config.SILICONFLOW_API_KEY)
+    retriever = MultiChannelRetriever(
+        embeddings=embeddings,
+        faiss_index_dir=config.FAISS_INDEX_DIR_STR,
+        bm25_indexes=bm25_indexes,
+        top_k_per_channel=8,
+        final_top_k=top_k * 3,  # Get more for reranking
+        vector_weight=vector_weight,
+    )
+
+    docs = retriever.invoke(query)
+
+    # Rerank
+    reranker = SiliconFlowReranker(api_key=config.SILICONFLOW_API_KEY, top_n=top_k)
+    reranked_docs = reranker.compress_documents(docs, query)
+
+    # Parent document expansion
+    parent_retriever = ParentDocumentRetriever()
+    results = []
+    for doc in reranked_docs:
+        chunk_id = doc.metadata.get("chunk_id", "")
+        source = doc.metadata.get("source_collection", "")
+        content = doc.page_content
+
+        # Expand operators/stories chunks to full parent doc
+        if enable_parent_expansion and (chunk_id.startswith("operators_") or chunk_id.startswith("stories_")):
+            chunk_data = {
+                "chunk_id": chunk_id,
+                "content": content,
+                "metadata": dict(doc.metadata),
+            }
+            src = "operators" if chunk_id.startswith("operators_") else "stories"
+            expanded = parent_retriever.get_parent_content(chunk_data, src)
+            if expanded and len(expanded) > len(content):
+                content = expanded
+
+        results.append({
+            "content": content[:2000],  # Truncate long content
+            "source": source,
+            "score": round(doc.metadata.get("relevance_score", 0.0), 4),
+            "chunk_id": chunk_id,
+        })
+
+    # Deduplicate results after parent document expansion:
+    # Multiple chunks from the same parent doc produce identical expanded content.
+    # Keep the first occurrence (highest reranker score) for each unique content.
+    seen_content = set()
+    deduped = []
+    for r in results:
+        content_key = r["content"][:300]
+        if content_key not in seen_content:
+            seen_content.add(content_key)
+            deduped.append(r)
+    return deduped
+
 
 async def execute_rag_search(arguments: Dict[str, Any], session_id: str = "") -> List[Dict]:
     """Execute arknights_rag_search tool.
-    
+
     Internal pipeline: MultiChannelRetriever → SiliconFlowReranker → ParentDocumentRetriever
-    
-    Returns list of {content, source, score} dicts.
+
+    Returns list of {content, source, score} dicts. The blocking retrieval/rerank
+    work runs in a worker thread so parallel tool calls don't serialize on the event loop.
     """
     query = arguments.get("query", "")
-    top_k = arguments.get("top_k", 8)
+    try:
+        top_k = max(1, min(int(arguments.get("top_k", 8)), _MAX_RAG_TOP_K))
+    except (TypeError, ValueError):
+        top_k = 8
     enable_parent_expansion = arguments.get("enable_parent_expansion", True)
     search_mode = arguments.get("search_mode", "balanced")
-
-    # Map search_mode to vector_weight for RRF fusion
-    # Higher vector_weight = more semantic; lower = more BM25 keyword
-    _MODE_WEIGHTS = {
-        "precise": 0.25,    # Heavy BM25 for exact keyword matching (stats, skill names)
-        "semantic": 0.75,   # Heavy vector for meaning-based queries (lore, relationships)
-        "balanced": 0.5,    # Default even split
-    }
     vector_weight = _MODE_WEIGHTS.get(search_mode, 0.5)
 
     if not query:
         return [{"error": "query parameter is required"}]
 
     try:
-        from backend.rag.retrievers import MultiChannelRetriever
-        from backend.lc.embeddings import SiliconFlowEmbeddings
-        from backend.lc.reranker import SiliconFlowReranker
-        from backend.rag.parent_document import ParentDocumentRetriever
-        from backend import config
-
-        # Load BM25 indexes (lazy, cached)
-        bm25_indexes = _get_bm25_indexes()
-
-        # Multi-channel retrieval
-        embeddings = SiliconFlowEmbeddings(api_key=config.SILICONFLOW_API_KEY)
-        retriever = MultiChannelRetriever(
-            embeddings=embeddings,
-            faiss_index_dir=config.FAISS_INDEX_DIR_STR,
-            bm25_indexes=bm25_indexes,
-            top_k_per_channel=8,
-            final_top_k=top_k * 3,  # Get more for reranking
-            vector_weight=vector_weight,
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            _run_rag_search_sync,
+            query,
+            top_k,
+            vector_weight,
+            enable_parent_expansion,
         )
-
-        docs = retriever.invoke(query)
-
-        # Rerank
-        reranker = SiliconFlowReranker(api_key=config.SILICONFLOW_API_KEY, top_n=top_k)
-        reranked_docs = reranker.compress_documents(docs, query)
-
-        # Parent document expansion
-        parent_retriever = ParentDocumentRetriever()
-        results = []
-        for doc in reranked_docs:
-            chunk_id = doc.metadata.get("chunk_id", "")
-            source = doc.metadata.get("source_collection", "")
-            content = doc.page_content
-
-            # Expand operators/stories chunks to full parent doc
-            if enable_parent_expansion and (chunk_id.startswith("operators_") or chunk_id.startswith("stories_")):
-                chunk_data = {
-                    "chunk_id": chunk_id,
-                    "content": content,
-                    "metadata": dict(doc.metadata),
-                }
-                src = "operators" if chunk_id.startswith("operators_") else "stories"
-                expanded = parent_retriever.get_parent_content(chunk_data, src)
-                if expanded and len(expanded) > len(content):
-                    content = expanded
-
-            results.append({
-                "content": content[:2000],  # Truncate long content
-                "source": source,
-                "score": round(doc.metadata.get("relevance_score", 0.0), 4),
-                "chunk_id": chunk_id,
-            })
-
-        # Deduplicate results after parent document expansion:
-        # Multiple chunks from the same parent doc produce identical expanded content.
-        # Keep the first occurrence (highest reranker score) for each unique content.
-        seen_content = set()
-        deduped = []
-        for r in results:
-            content_key = r["content"][:300]
-            if content_key not in seen_content:
-                seen_content.add(content_key)
-                deduped.append(r)
-        results = deduped
-
-        return results
-
     except Exception as e:
         logger.error(f"RAG search failed: {e}", exc_info=True)
         return [{"error": f"检索失败: {str(e)}"}]
@@ -185,7 +201,9 @@ async def execute_web_search(arguments: Dict[str, Any], session_id: str = "") ->
     try:
         from backend.api.web_search import search as web_search
 
-        results = web_search(query, limit=5)
+        # requests 是阻塞式 IO，放到工作线程避免卡住事件循环和并行执行的其他工具
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, web_search, query, 5)
 
         if not results:
             return [{"message": "未找到相关网络搜索结果", "query": query}]
@@ -224,7 +242,6 @@ async def execute_web_search(arguments: Dict[str, Any], session_id: str = "") ->
 
 # ===== Lazy-loaded singletons =====
 
-import threading
 _bm25_indexes = None
 _bm25_lock = threading.Lock()
 
