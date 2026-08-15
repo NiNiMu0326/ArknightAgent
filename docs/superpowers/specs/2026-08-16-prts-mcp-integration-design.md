@@ -38,6 +38,7 @@
 | 接入方式 | 通用 MCP Bridge：动态发现 → 白名单过滤 → OpenAI Function Schema 转换 → 注册 `ToolRegistry` |
 | 传输方式 | Python stdio 子进程（`prts-mcp` console script） |
 | 可用性 | 可选依赖：连接失败 Agent 照常启动，只注册本地 4 个工具；`/status` 暴露 MCP 状态 |
+| 服务器运行环境 | 生产服务器当前为 Python 3.8.10，`prts-mcp`/`mcp` 需 ≥3.10。采用 uv + Python 3.11 项目专属 `.venv`，systemd 改用 `.venv/bin/python` 启动，CI 与生产统一为 3.11 |
 | 立绘数据源 | `LOCAL_IMAGE=false`（PRTS MediaWiki 按需下载）+ `PRTS_IMAGE_CACHE=true`（MCP 内置 256MB LRU） |
 | 图片展示 | MCP 返回的 base64 `ImageContent` 只进前端 SSE，不进 LLM；默认强制 `variant=preview` |
 | 输出通道 | `PRTS_OUTPUT_CHANNEL=both`（文本 + `structuredContent`） |
@@ -81,7 +82,7 @@ Agent 循环 tool_call:
 - `PRTS_MCP_ENABLED`（默认 `true`）：总开关，CI 设为 `false`。
 - `PRTS_MCP_COMMAND`（默认 `prts-mcp`）：子进程命令。
 - `PRTS_MCP_CONNECT_TIMEOUT`（默认 `10` 秒）。
-- `PRTS_MCP_DATA_DIR`（默认项目根 `data/prts_mcp`）：传给子进程的 `GAMEDATA_PATH`，加入 `.gitignore`。
+- **不设置 `GAMEDATA_PATH`**：prts-mcp 检测到该环境变量会禁用 auto-sync；保持默认用户数据目录（服务器为 `/root/.local/share/prts-mcp/gamedata`），让其后台自动同步。
 - 固定传入子进程的 env：`PRTS_OUTPUT_CHANNEL=both`、`LOCAL_IMAGE=false`、`PRTS_IMAGE_CACHE=true`、`IMAGES_ENABLED=true`。
 
 ### 6.2 `backend/agent/mcp_client.py`（新增）
@@ -182,8 +183,9 @@ Agent 循环 tool_call:
 ## 9. 依赖与部署
 
 - `backend/requirements.txt` 增加 `prts-mcp==2.7.0`（其依赖含 `mcp==2.0.0`）。
-- 要求 Python ≥ 3.10；实施前确认服务器 Python 版本。
-- 服务器首次启动会同步敌方/关卡/物品数据到 `data/prts_mcp`，后续增量更新；部署后做一次 smoke test。
+- 生产服务器 Python 3.8 不满足要求：一次性用 uv 安装 Python 3.11 并创建 `/srv/projects/arknights-rag/.venv`，重装 `backend/requirements.txt`；`/etc/systemd/system/arknights-rag.service` 的 `ExecStart` 改为 `.venv/bin/python -m uvicorn ...`；`.venv/` 加入 `.gitignore`。
+- CI 的 deploy job 在 `git reset --hard` 后增加 `uv pip install -r backend/requirements.txt`，保证新增 Python 依赖在服务器生效。
+- 服务器首次启动会由 prts-mcp 自动同步敌方/关卡/物品数据到 root 用户默认数据目录（`/root/.local/share/prts-mcp/`），后续增量更新；部署后做一次 smoke test。
 - 前端构建流程不变。
 
 ## 10. 验收标准
