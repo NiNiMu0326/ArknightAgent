@@ -445,10 +445,16 @@
     </div>
 
     <!-- 图片放大灯箱 -->
-    <div v-if="zoomImage" class="image-lightbox" @click.self="closeImageZoom">
+    <div v-if="zoomImage" class="image-lightbox" @click.self="closeImageZoom" @wheel.prevent="handleZoomWheel">
       <div class="image-lightbox-box">
-        <img :src="zoomImage.data_url" :alt="zoomImage.label || '立绘'" class="image-lightbox-img" />
+        <img
+          :src="zoomImage.data_url"
+          :alt="zoomImage.label || '立绘'"
+          class="image-lightbox-img"
+          :style="{ transform: `scale(${zoomScale})` }"
+        />
         <div class="image-lightbox-label" v-if="zoomImage.label">{{ zoomImage.label }}</div>
+        <div class="image-lightbox-zoom" v-if="Math.abs(zoomScale - 1) > 0.01">{{ Math.round(zoomScale * 100) }}%</div>
         <button type="button" class="image-lightbox-close" @click="closeImageZoom" aria-label="关闭预览">×</button>
       </div>
     </div>
@@ -485,6 +491,7 @@ const expandedTools = ref([])
 const expandedThinking = ref([])
 const expandedProcesses = ref([])
 const zoomImage = ref(null)
+const zoomScale = ref(1)
 
 const toolItemRefs = reactive({})
 const currentRound = ref(0)
@@ -753,10 +760,18 @@ function getAnswerImages(messages, assistantIdx) {
 
 function openImageZoom(img) {
   zoomImage.value = img || null
+  zoomScale.value = 1
 }
 
 function closeImageZoom() {
   zoomImage.value = null
+  zoomScale.value = 1
+}
+
+function handleZoomWheel(event) {
+  if (!zoomImage.value) return
+  const step = event.deltaY > 0 ? -0.1 : 0.1
+  zoomScale.value = Math.min(5, Math.max(0.2, +(zoomScale.value + step).toFixed(2)))
 }
 
 function renderMessageWithSources(content, messageSources) {
@@ -1446,13 +1461,6 @@ function applyQuickAction(question) {
   .chat-input-area { padding: var(--spacing-md); padding-bottom: calc(var(--spacing-md) + env(safe-area-inset-bottom)); }
   .chat-input { font-size: 16px; min-height: 44px; padding: 10px 12px; }
   .chat-messages { padding: var(--spacing-md); }
-  /* 快捷问题统一放到输入框下方单行 */
-  /* 输入框下方始终显示：问题区可横滑，刷新键固定在最右不随内容滚动 */
-  .chat-body:not(.has-messages) .chat-input-area .quick-actions { display: flex; }
-  .chat-input-area .quick-actions { gap: 0; flex-wrap: nowrap; margin-top: var(--spacing-sm); padding: 0; }
-  .chat-input-area .quick-questions { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: var(--spacing-xs); overflow-x: auto; padding-bottom: 2px; padding-right: var(--spacing-xs); margin-right: var(--spacing-xs); border-right: 1px solid var(--border-color); scrollbar-width: none; overscroll-behavior-x: contain; }
-  .chat-input-area .quick-questions::-webkit-scrollbar { display: none; }
-  .chat-input-area .quick-action { font-size: 0.75rem; padding: var(--spacing-xs) var(--spacing-sm); flex-shrink: 0; }
   .chat-message { max-width: 92%; }
   .chat-bubble { padding: var(--spacing-sm) var(--spacing-md); }
   .thinking-card, .tool-call-card { max-width: 95%; }
@@ -1463,10 +1471,11 @@ function applyQuickAction(question) {
 .empty-state-icon { color: var(--text-dim); margin-bottom: var(--spacing-md); }
 .empty-state-title { font-family: var(--font-display); font-size: 1.25rem; color: var(--text-secondary); margin-bottom: var(--spacing-sm); }
 .empty-state-desc { font-size: 0.9rem; color: var(--text-dim); max-width: 300px; }
-.quick-actions { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); margin-top: var(--spacing-md); padding: 0 var(--spacing-sm); }
-/* Desktop: wrapper disappears so question buttons participate directly in .quick-actions layout */
-.quick-questions { display: contents; }
-.quick-action { flex: 0 1 auto; min-width: 0; padding: var(--spacing-xs) var(--spacing-md); background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: var(--radius-lg); color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; transition: all var(--transition-fast); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quick-actions { display: flex; align-items: center; flex-wrap: nowrap; gap: 0; margin-top: var(--spacing-sm); padding: 0; min-width: 0; }
+/* 问题区单行横向滚动，刷新键固定在最右不随内容滚动（PC/移动端一致） */
+.quick-questions { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: var(--spacing-xs); overflow-x: auto; padding-bottom: 2px; padding-right: var(--spacing-xs); margin-right: var(--spacing-xs); border-right: 1px solid var(--border-color); scrollbar-width: none; overscroll-behavior-x: contain; }
+.quick-questions::-webkit-scrollbar { display: none; }
+.quick-action { flex: 0 0 auto; min-width: 0; padding: var(--spacing-xs) var(--spacing-md); background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: var(--radius-lg); color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; transition: all var(--transition-fast); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quick-action:hover { border-color: var(--color-primary-dim); color: var(--color-primary); }
 .quick-action.refresh:hover { border-color: var(--color-primary); }
 .refresh-fixed { margin-left: auto; flex-shrink: 0; }
@@ -1510,8 +1519,9 @@ function applyQuickAction(question) {
 /* 图片放大灯箱 */
 .image-lightbox { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; background: rgba(4, 6, 10, 0.88); backdrop-filter: blur(4px); animation: fadeSlideIn 0.15s ease-out; }
 .image-lightbox-box { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--spacing-sm); max-width: 94vw; max-height: 94vh; }
-.image-lightbox-img { max-width: 92vw; max-height: 84vh; object-fit: contain; border-radius: var(--radius-md); box-shadow: var(--shadow-lg, 0 12px 40px rgba(0, 0, 0, 0.5)); background: #000; }
+.image-lightbox-img { max-width: 92vw; max-height: 84vh; object-fit: contain; border-radius: var(--radius-md); box-shadow: var(--shadow-lg, 0 12px 40px rgba(0, 0, 0, 0.5)); background: #000; transform-origin: center center; transition: transform 0.15s ease-out; }
 .image-lightbox-label { font-size: 0.85rem; color: var(--text-secondary); text-align: center; }
+.image-lightbox-zoom { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); padding: 2px 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 0.75rem; font-family: var(--font-mono); pointer-events: none; }
 .image-lightbox-close { position: absolute; top: -14px; right: -14px; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-color); background: var(--bg-panel); color: var(--text-secondary); font-size: 18px; line-height: 1; cursor: pointer; z-index: 1; }
 .image-lightbox-close:hover { color: #fff; border-color: var(--color-primary-dim); }
 .chat-time { font-size: 0.7rem; opacity: 0.5; margin-top: var(--spacing-xs); text-align: right; }
