@@ -135,6 +135,19 @@
                       <div class="tool-result-summary" :class="{ 'is-interrupted-text': msg.results?.[call.id]?.interrupted }" v-if="msg.results?.[call.id] && !expandedTools.includes(call.id)">
                         {{ msg.results[call.id].summary }}
                       </div>
+                      <div
+                        class="tool-result-images-inline"
+                        v-if="!expandedTools.includes(call.id) && msg.results?.[call.id] && isMcpTool(call.name) && normalizeMcpDisplay(msg.results[call.id].data).images.length"
+                      >
+                        <img
+                          v-for="(img, i) in normalizeMcpDisplay(msg.results[call.id].data).images"
+                          :key="i"
+                          :src="img.data_url"
+                          :alt="img.label || '立绘'"
+                          class="tool-detail-image"
+                          loading="lazy"
+                        />
+                      </div>
                       <div class="tool-call-pending" v-if="!msg.results?.[call.id]">
                         <span class="pending-dot"></span> 执行中 {{ formatElapsed(nowTs - msg.timestamp) }}
                       </div>
@@ -905,6 +918,12 @@ async function startAgentStream(content) {
           tool_name: event.tool_name || '',
           result: event.result || null,
         }, streamSessionId)
+        // 立绘等带图片的 MCP 结果自动展开，让图片立即可见
+        const images = event.result?.images
+        if (Array.isArray(images) && images.length > 0 &&
+            !expandedTools.value.includes(event.tool_call_id)) {
+          expandedTools.value.push(event.tool_call_id)
+        }
       },
 
       onAnswerDelta(event) {
@@ -1445,6 +1464,8 @@ function applyQuickAction(question) {
 
 /* PRTS-MCP results */
 .tool-detail-mcp { display: flex; flex-direction: column; gap: var(--spacing-sm); }
+.tool-result-images-inline { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); margin-top: var(--spacing-xs); }
+.tool-result-images-inline .tool-detail-image { max-height: 180px; max-width: 120px; }
 .tool-detail-mcp-text { font-size: 0.72rem; color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .tool-detail-mcp-images { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); }
 .tool-detail-image-link { display: block; }

@@ -12,6 +12,10 @@ from backend.quick_questions import (
     RAG_FALLBACK_TEMPLATES,
     pick_template,
     pick_rag_question,
+    make_artwork_question,
+    make_stage_enemies_question,
+    make_stage_item_question,
+    pick_unique_questions,
 )
 
 
@@ -26,6 +30,24 @@ class TestTemplatePools:
             assert template["label"]
             assert template["question"]
             assert template["category"] in {"rag", "graph", "structured", "prts_mcp"}
+
+    def test_dynamic_prts_templates_fill_real_names(self):
+        assert make_artwork_question("阿米娅")["label"] == "阿米娅立绘"
+        assert "阿米娅" in make_artwork_question("阿米娅")["question"]
+        assert make_stage_enemies_question("1-7")["label"] == "1-7出怪顺序"
+        assert "1-7" in make_stage_enemies_question("1-7")["question"]
+        assert make_stage_item_question("CE-5")["label"] == "CE-5材料掉落"
+        assert "CE-5" in make_stage_item_question("CE-5")["question"]
+
+    def test_pick_unique_questions_respects_count_and_dedup(self, monkeypatch):
+        def make_question(name):
+            return {"label": f"{name}立绘", "question": f"{name}有哪些立绘？", "category": "prts_mcp"}
+
+        choices = iter(["阿米娅", "陈", "陈"])
+        monkeypatch.setattr("backend.quick_questions.random.choice", lambda seq: next(choices))
+        questions = pick_unique_questions(["阿米娅", "陈"], make_question, {"阿米娅立绘"}, 1)
+        assert len(questions) == 1
+        assert questions[0]["label"] == "陈立绘"
 
 
 class TestPickTemplate:

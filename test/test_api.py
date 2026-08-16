@@ -157,7 +157,7 @@ class TestDataEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert "questions" in data
-        assert len(data["questions"]) == 4
+        assert len(data["questions"]) == 8
         categories = {q["category"] for q in data["questions"]}
         assert categories == {"rag", "graph", "structured", "prts_mcp"}
 

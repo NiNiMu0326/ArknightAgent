@@ -1,8 +1,11 @@
 """
 Quick-question template pools: 4 capability categories.
 
-Each refresh returns one question per category so the UI doubles as a
-capability tour (RAG / GraphRAG / structured query / PRTS-MCP).
+Each refresh returns a fuller batch (8 questions) built from real entity lists:
+- operator names fill 「xxx立绘」 art questions
+- stage codes fill 「xxx出怪顺序」 / 「xxx材料掉落」 questions
+- stories/enemies/aliases fill RAG questions
+Fixed templates act as fallback when local data is unavailable.
 """
 
 import random
@@ -71,6 +74,62 @@ def pick_template(templates: Sequence[Dict], exclude_labels: Set[str]) -> Dict:
     available = [t for t in templates if t["label"] not in exclude_labels]
     pool = available or list(templates)
     return random.choice(pool)
+
+
+def make_artwork_question(operator_name: str) -> Dict:
+    """xxx立绘：xxx 从干员名称列表抽取。"""
+    return {
+        "label": f"{operator_name}立绘",
+        "question": f"{operator_name}有哪些立绘？请展示其中一张。",
+        "type": "artwork",
+        "category": "prts_mcp",
+    }
+
+
+def make_stage_enemies_question(stage_code: str) -> Dict:
+    """xxx出怪顺序：xxx 从关卡代码列表抽取。"""
+    return {
+        "label": f"{stage_code}出怪顺序",
+        "question": f"{stage_code}关卡的出怪顺序是什么？",
+        "type": "stage",
+        "category": "prts_mcp",
+    }
+
+
+def make_stage_item_question(stage_code: str) -> Dict:
+    """xxx材料掉落：xxx 从关卡代码列表抽取。"""
+    return {
+        "label": f"{stage_code}材料掉落",
+        "question": f"{stage_code}关卡掉落什么材料？",
+        "type": "item",
+        "category": "prts_mcp",
+    }
+
+
+def pick_unique_questions(
+    candidates: Sequence,
+    make_question,
+    exclude_labels: Set[str],
+    count: int,
+    attempts_per_item: int = 50,
+) -> List[Dict]:
+    """Build `count` distinct questions by sampling `candidates` via `make_question`."""
+    picked: List[Dict] = []
+    if not candidates:
+        return picked
+    for _ in range(count):
+        for _ in range(attempts_per_item):
+            question = make_question(random.choice(candidates))
+            if question["label"] not in exclude_labels:
+                exclude_labels.add(question["label"])
+                picked.append(question)
+                break
+        else:
+            # 候选都撞上了已有标签时仍返回一个，避免批次缩水
+            question = make_question(random.choice(candidates))
+            exclude_labels.add(question["label"])
+            picked.append(question)
+    return picked
 
 
 def pick_rag_question(

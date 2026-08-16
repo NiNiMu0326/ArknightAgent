@@ -74,6 +74,10 @@ from backend.quick_questions import (
     PRTS_MCP_TEMPLATES,
     pick_template,
     pick_rag_question,
+    make_artwork_question,
+    make_stage_enemies_question,
+    make_stage_item_question,
+    pick_unique_questions,
 )
 
 # ============== Lifespan ==============
@@ -1155,20 +1159,73 @@ def extract_names_from_markdown_table(content: str) -> List[str]:
 _qq_operator_names: Optional[List[str]] = None
 _qq_story_names: Optional[List[str]] = None
 _qq_enemy_names: Optional[List[str]] = None
+_qq_stage_codes: Optional[List[str]] = None  # 关卡代码（如 1-7），来自 prts-mcp stage_table
 _qq_alias_candidates: Optional[List[tuple]] = None  # [(standard_name, [aliases]), ...]
 _qq_graph_operators: Optional[List[str]] = None  # operator nodes from graph
 _qq_previous_labels: Optional[set] = None  # dedup: labels from previous batch
 
 
+def _load_qq_stage_codes() -> List[str]:
+    """Load stage codes from prts-mcp's synced stage_table.json (fallback list if absent)."""
+    fallback = ["1-7", "0-1", "CE-5", "LS-5", "4-10", "5-10"]
+    base = os.environ.get("PRTS_MCP_DATA_DIR")
+    candidate_dirs = []
+    if base:
+        candidate_dirs.append(Path(base))
+    else:
+        home = Path.home()
+        candidate_dirs.extend([
+            home / ".local/share/prts-mcp/gamedata",
+            home / "AppData/Local/prts-mcp/gamedata",
+        ])
+    for data_dir in candidate_dirs:
+        if not data_dir.exists():
+            continue
+        releases = data_dir / ".releases"
+        candidates = (
+            list(releases.glob("*/zh_CN/gamedata/excel/stage_table.json"))
+            if releases.exists()
+            else list(data_dir.glob("*/zh_CN/gamedata/excel/stage_table.json"))
+        )
+        if not candidates:
+            # 兜底：允许 PRTS_MCP_DATA_DIR 直接指向 stage_table.json 所在目录
+            candidates = list(data_dir.glob("stage_table.json"))
+        for stage_file in candidates:
+            try:
+                with open(stage_file, 'r', encoding='utf-8') as f:
+                    stage_data = json.load(f)
+            except Exception:
+                continue
+            stages = stage_data.get("stages", {})
+            codes = []
+            seen = set()
+            for stage_id, info in stages.items():
+                if not isinstance(info, dict):
+                    continue
+                # 排除突袭/四星等派生关卡，只留常规难度，避免重复代码
+                if "#f#" in stage_id or info.get("difficulty") != "NORMAL":
+                    continue
+                code = (info.get("code") or "").strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+            if codes:
+                return sorted(codes)
+    return fallback
+
+
 def _load_qq_data():
     """Lazy-load all static data needed for quick-question generation."""
-    global _qq_operator_names, _qq_story_names, _qq_enemy_names, _qq_alias_candidates, _qq_graph_operators
+    global _qq_operator_names, _qq_story_names, _qq_enemy_names, _qq_stage_codes, _qq_alias_candidates, _qq_graph_operators
 
     if _qq_operator_names is not None:
         return  # already loaded
 
     from backend.rag.alias_map import ALIAS_MAP
     from collections import defaultdict
+
+    # Stage codes (PRTS-MCP questions): from prts-mcp synced stage_table.json
+    _qq_stage_codes = _load_qq_stage_codes()
 
     # Operator names (skill questions): from all_operators.json
     operators_file = DATA_DIR / "all_operators.json"
@@ -1233,7 +1290,7 @@ def _load_qq_data():
 
 @app.get("/quick-questions")
 async def get_quick_questions(refresh: bool = False):
-    """生成4个快速问题，按 RAG/GraphRAG/结构化查询/PRTS-MCP 能力分类各一个。"""
+    """生成8个快速问题，覆盖 RAG/GraphRAG/结构化查询/PRTS-MCP，并尽量从真实实体列表抽取。"""
     global _quick_questions_cache, _quick_questions_cache_time, _qq_previous_labels
 
     now = time.time()
@@ -1319,26 +1376,38 @@ async def get_quick_questions(refresh: bool = False):
         })
         exclude_labels.add(label)
 
-    # ===== RAG 能力：技能/故事/敌人/别名四类模板随机轮换 =====
-    rag_question = pick_rag_question(
-        _qq_operator_names or [],
-        _qq_story_names or [],
-        _qq_enemy_names or [],
-        _qq_alias_candidates or [],
-        exclude_labels,
-    )
-    questions.append(rag_question)
-    exclude_labels.add(rag_question["label"])
+    # ===== RAG 能力：技能/故事/敌人/别名四类模板随机轮换，取 2 个 =====
+    for _ in range(2):
+        rag_question = pick_rag_question(
+            _qq_operator_names or [],
+            _qq_story_names or [],
+            _qq_enemy_names or [],
+            _qq_alias_candidates or [],
+            exclude_labels,
+        )
+        questions.append(rag_question)
+        exclude_labels.add(rag_question["label"])
 
     # ===== 结构化查询能力 =====
     structured_question = pick_template(STRUCTURED_TEMPLATES, exclude_labels)
     questions.append(structured_question)
     exclude_labels.add(structured_question["label"])
 
-    # ===== PRTS-MCP 能力 =====
-    mcp_question = pick_template(PRTS_MCP_TEMPLATES, exclude_labels)
-    questions.append(mcp_question)
-    exclude_labels.add(mcp_question["label"])
+    # ===== PRTS-MCP 能力：从真实列表抽取 xxx立绘 / xxx出怪顺序 / xxx材料掉落 =====
+    questions.extend(pick_unique_questions(
+        _qq_operator_names or [], make_artwork_question, exclude_labels, 2,
+    ))
+    questions.extend(pick_unique_questions(
+        _qq_stage_codes or [], make_stage_enemies_question, exclude_labels, 1,
+    ))
+    questions.extend(pick_unique_questions(
+        _qq_stage_codes or [], make_stage_item_question, exclude_labels, 1,
+    ))
+    # 数据缺失时用固定模板补齐到 8 个
+    while len(questions) < 8:
+        mcp_question = pick_template(PRTS_MCP_TEMPLATES, exclude_labels)
+        questions.append(mcp_question)
+        exclude_labels.add(mcp_question["label"])
 
     # Update caches
     _quick_questions_cache = questions

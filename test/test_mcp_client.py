@@ -89,7 +89,7 @@ class TestExtractMcpResult:
         assert payload.display["structured"]["operator_name"] == "阿米娅"
 
     def test_oversized_image_is_dropped(self):
-        big = "A" * 400_001
+        big = "A" * 1_600_001
         raw = make_call_result(
             content=[SimpleNamespace(type="image", mime_type="image/png", data=big)],
             structured=None,

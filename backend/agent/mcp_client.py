@@ -32,7 +32,8 @@ MCP_ALLOWLIST = frozenset({
 
 LLM_RESULT_MAX_CHARS = 12_000
 DISPLAY_RESULT_MAX_CHARS = 50_000
-MAX_IMAGE_B64_CHARS = 400_000
+# large=1024px 立绘 base64 实测约 600KB；original 可能数 MB，仍会丢弃。
+MAX_IMAGE_B64_CHARS = 1_600_000
 
 
 def _attr(obj: Any, name: str, default: Any = None) -> Any:
