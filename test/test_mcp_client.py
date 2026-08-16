@@ -167,6 +167,40 @@ class TestRegisterMcpTools:
         assert fake.called_args["variant"] == "preview"
         assert payload.llm_content == "ok"
 
+    def test_executor_falls_back_to_preview_when_large_fails(self):
+        class FakeManager:
+            def __init__(self):
+                self.calls = []
+
+            async def call_tool(self, name, arguments):
+                self.calls.append(dict(arguments))
+                if arguments.get("variant") == "large":
+                    return make_call_result(
+                        content=[SimpleNamespace(
+                            type="text",
+                            text="下载图片失败：image exceeds 1048576 byte cap",
+                        )],
+                        structured=None,
+                    )
+                return make_call_result(
+                    content=[
+                        SimpleNamespace(type="text", text="ok preview"),
+                        SimpleNamespace(type="image", mime_type="image/png", data="QUJD"),
+                    ],
+                    structured=None,
+                )
+
+        fake = FakeManager()
+        executor = make_mcp_executor(fake, "operator_artwork")
+        payload = asyncio.run(executor({
+            "action": "get",
+            "operator_name": "陈",
+            "artwork_id": "立绘_陈_2.png",
+            "variant": "large",
+        }))
+        assert [c["variant"] for c in fake.calls] == ["large", "preview"]
+        assert payload.display["images"][0]["data_url"] == "data:image/png;base64,QUJD"
+
 
 class TestMcpClientManagerFailures:
     def test_call_tool_when_disconnected_raises(self):

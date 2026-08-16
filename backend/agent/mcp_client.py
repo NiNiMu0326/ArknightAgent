@@ -177,7 +177,32 @@ def make_mcp_executor(manager: "McpClientManager", tool_name: str):
                     "images": [],
                 },
             )
-        return extract_mcp_result(raw, tool_name)
+
+        payload = extract_mcp_result(raw, tool_name)
+
+        # prts-mcp 下载 large/original 时可能因单图超过 1MB 上限失败；
+        # 自动降级为 preview 重试一次，保证用户始终能看到图。
+        if (
+            tool_name == "operator_artwork"
+            and call_args.get("action") == "get"
+            and call_args.get("variant") != "preview"
+            and not payload.display.get("images")
+        ):
+            text = payload.llm_content or ""
+            if any(hint in text for hint in ("下载图片失败", "exceeds", "图片过大")):
+                logger.info(
+                    f"[MCP] operator_artwork variant={call_args.get('variant')} 失败，降级 preview 重试"
+                )
+                call_args["variant"] = "preview"
+                try:
+                    raw = await manager.call_tool(tool_name, call_args)
+                    retry_payload = extract_mcp_result(raw, tool_name)
+                    if retry_payload.display.get("images"):
+                        return retry_payload
+                except Exception as exc:
+                    logger.warning(f"[MCP] operator_artwork preview 重试失败: {exc}")
+
+        return payload
 
     return _execute
 
