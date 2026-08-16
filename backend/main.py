@@ -1,5 +1,5 @@
 """
-Arknights RAG Backend - FastAPI Server
+Arknights Agent Backend - FastAPI Server
 Provides REST API for the frontend
 """
 import asyncio
@@ -106,7 +106,8 @@ async def _start_prts_mcp():
     }
     # stdio 子进程默认只继承白名单环境变量；显式透传 GitHub 访问相关配置
     # （GITHUB_MIRRORS 用于 GitHub Release 数据同步走镜像，GITHUB_TOKEN 用于提高限流额度）
-    for key in ("GITHUB_MIRRORS", "GITHUB_TOKEN"):
+    # 以及数据目录，保证 prts-mcp 子进程与 stage_waves 读取的是同一份同步数据
+    for key in ("GITHUB_MIRRORS", "GITHUB_TOKEN", "PRTS_MCP_DATA_DIR"):
         value = os.environ.get(key)
         if value:
             mcp_env[key] = value
@@ -191,8 +192,8 @@ async def lifespan(app: FastAPI):
 
 # ============== FastAPI App ==============
 app = FastAPI(
-    title="Arknights RAG API",
-    description="Backend API for Arknights RAG System",
+    title="Arknights Agent API",
+    description="Backend API for Arknights Agent",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -381,7 +382,7 @@ class StatsResponse(BaseModel):
 
 @app.get("/api")
 async def root():
-    return {"message": "Arknights RAG API", "version": "1.0.0"}
+    return {"message": "Arknights Agent API", "version": "1.0.0"}
 
 
 @app.get("/health")
@@ -1165,52 +1166,75 @@ _qq_graph_operators: Optional[List[str]] = None  # operator nodes from graph
 _qq_previous_labels: Optional[set] = None  # dedup: labels from previous batch
 
 
-def _load_qq_stage_codes() -> List[str]:
-    """Load stage codes from prts-mcp's synced stage_table.json (fallback list if absent)."""
-    fallback = ["1-7", "0-1", "CE-5", "LS-5", "4-10", "5-10"]
+def _stage_table_candidates() -> List[Path]:
+    """Collect prts-mcp stage_table.json candidates across supported layouts.
+
+    PRTS_MCP_DATA_DIR 可能指向 prts-mcp 根目录（数据在其下的 gamedata/），
+    也可能直接指向 gamedata 目录；都兼容。多个 release 存在时按 mtime
+    取最新的（与 stage_waves 的 _latest_zh_dir 语义一致）。
+    """
     base = os.environ.get("PRTS_MCP_DATA_DIR")
-    candidate_dirs = []
+    data_roots: List[Path] = []
     if base:
-        candidate_dirs.append(Path(base))
+        p = Path(base)
+        data_roots.extend([p / "gamedata", p])
     else:
         home = Path.home()
-        candidate_dirs.extend([
+        data_roots.extend([
             home / ".local/share/prts-mcp/gamedata",
             home / "AppData/Local/prts-mcp/gamedata",
         ])
-    for data_dir in candidate_dirs:
+
+    candidates: List[Path] = []
+    for data_dir in data_roots:
         if not data_dir.exists():
             continue
         releases = data_dir / ".releases"
-        candidates = (
-            list(releases.glob("*/zh_CN/gamedata/excel/stage_table.json"))
-            if releases.exists()
-            else list(data_dir.glob("*/zh_CN/gamedata/excel/stage_table.json"))
-        )
-        if not candidates:
-            # 兜底：允许 PRTS_MCP_DATA_DIR 直接指向 stage_table.json 所在目录
-            candidates = list(data_dir.glob("stage_table.json"))
-        for stage_file in candidates:
-            try:
-                with open(stage_file, 'r', encoding='utf-8') as f:
-                    stage_data = json.load(f)
-            except Exception:
+        if releases.exists():
+            candidates.extend(releases.glob("*/zh_CN/gamedata/excel/stage_table.json"))
+        else:
+            candidates.extend(data_dir.glob("*/zh_CN/gamedata/excel/stage_table.json"))
+            candidates.extend(data_dir.glob("excel/stage_table.json"))
+        candidates.extend(data_dir.glob("stage_table.json"))
+
+    unique: Dict[str, Path] = {}
+    for f in candidates:
+        try:
+            unique[str(f.resolve())] = f
+        except OSError:
+            unique[str(f)] = f
+    try:
+        return sorted(unique.values(), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return list(unique.values())
+
+
+def _load_qq_stage_codes() -> List[str]:
+    """Load stage codes from prts-mcp's synced stage_table.json (fallback list if absent)."""
+    fallback = ["1-7", "0-1", "CE-5", "LS-5", "4-10", "5-10"]
+    for stage_file in _stage_table_candidates():
+        try:
+            with open(stage_file, 'r', encoding='utf-8') as f:
+                stage_data = json.load(f)
+        except Exception:
+            continue
+        stages = stage_data.get("stages")
+        if not isinstance(stages, dict):
+            continue
+        codes = []
+        seen = set()
+        for stage_id, info in stages.items():
+            if not isinstance(info, dict):
                 continue
-            stages = stage_data.get("stages", {})
-            codes = []
-            seen = set()
-            for stage_id, info in stages.items():
-                if not isinstance(info, dict):
-                    continue
-                # 排除突袭/四星等派生关卡，只留常规难度，避免重复代码
-                if "#f#" in stage_id or info.get("difficulty") != "NORMAL":
-                    continue
-                code = (info.get("code") or "").strip()
-                if code and code not in seen:
-                    seen.add(code)
-                    codes.append(code)
-            if codes:
-                return sorted(codes)
+            # 排除突袭/四星等派生关卡，只留常规难度，避免重复代码
+            if "#f#" in stage_id or info.get("difficulty") != "NORMAL":
+                continue
+            code = (info.get("code") or "").strip()
+            if code and code not in seen:
+                seen.add(code)
+                codes.append(code)
+        if codes:
+            return sorted(codes)
     return fallback
 
 

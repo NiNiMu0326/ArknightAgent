@@ -27,6 +27,12 @@ describe('MCP tool metadata', () => {
     expect(getToolIcon('unknown_tool')).toBe('🔧')
   })
 
+  it('resolves the local stage_waves tool display name and icon', () => {
+    expect(isMcpTool('arknights_stage_waves')).toBe(false)
+    expect(getToolDisplayName('arknights_stage_waves')).toBe('出怪顺序')
+    expect(getToolIcon('arknights_stage_waves')).toBe('🌊')
+  })
+
   it('summarizes MCP tool args', () => {
     expect(summarizeMcpToolArgs('search_prts', { query: '霜星' })).toBe('搜索: "霜星"')
     expect(summarizeMcpToolArgs('get_stage_enemies', { stage_id: 'main_01-07' })).toBe('出怪: main_01-07')

@@ -44,7 +44,7 @@ if __name__ == "__main__":
     only_index = "--index" in args
     only_chunk = "--chunk" in args
 
-    print("=== Rebuilding Arknights RAG Indexes ===")
+    print("=== Rebuilding Arknights Agent Indexes ===")
     print()
 
     if only_chunk:

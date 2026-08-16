@@ -341,7 +341,22 @@ export const api = {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    const callbacks = { onNewSessionId, onThinkingStart, onThinkingDelta, onThinkingDone, onToolCallsStart, onToolExecuting, onToolCallResult, onAnswerDelta, onAnswerDone, onError }
+    // 后端在正常结束/出错时会发 answer_done/error 终态事件；
+    // 若流在两者都未出现的情况下 EOF（网络断开、进程退出），按错误处理，
+    // 让调用方保存 partial 并提示用户，而不是静默成功。
+    let receivedTerminal = false
+    const callbacks = {
+      onNewSessionId,
+      onThinkingStart,
+      onThinkingDelta,
+      onThinkingDone,
+      onToolCallsStart,
+      onToolExecuting,
+      onToolCallResult,
+      onAnswerDelta,
+      onAnswerDone: (event) => { receivedTerminal = true; onAnswerDone?.(event) },
+      onError: (event) => { receivedTerminal = true; onError?.(event) },
+    }
 
     const parseLine = (line) => {
       const trimmed = line.trim()
@@ -373,6 +388,10 @@ export const api = {
     // remaining partial line (if any) after the stream ends.
     buffer += decoder.decode()
     if (buffer.trim()) parseLine(buffer)
+
+    if (!receivedTerminal) {
+      throw new Error('连接中断：响应流未正常结束，请重试')
+    }
   }
 }
 

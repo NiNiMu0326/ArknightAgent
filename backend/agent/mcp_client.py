@@ -127,13 +127,14 @@ def extract_mcp_result(call_result: Any, tool_name: str = "") -> ToolResultPaylo
             else:
                 text_parts.append(f"[图片过大已省略，base64 长度 {len(data)}]")
 
-    text = "\n\n".join(part for part in text_parts if part)
+    raw_text = "\n\n".join(part for part in text_parts if part)
+    text = _truncate_text(raw_text, DISPLAY_RESULT_MAX_CHARS)
     display_structured = (
         structured if structured is None
         else _truncate_json_for_display(structured, DISPLAY_RESULT_MAX_CHARS)
     )
 
-    llm_parts = [text or "(工具返回空文本)"]
+    llm_parts = [_truncate_text(raw_text, LLM_RESULT_MAX_CHARS) or "(工具返回空文本)"]
     if structured is not None:
         llm_parts.append(
             "structuredContent:\n" + _truncate_text(_json_text(structured), LLM_RESULT_MAX_CHARS)
@@ -163,6 +164,24 @@ def make_mcp_executor(manager: "McpClientManager", tool_name: str):
             raw = await manager.call_tool(tool_name, call_args)
         except Exception as exc:
             logger.error(f"[MCP] tool {tool_name} failed: {exc}", exc_info=True)
+            # prts-mcp 对大图也可能直接抛协议异常（不返回文本错误），
+            # 与文本错误路径一致：非 preview 时自动降级 preview 重试一次。
+            if (
+                tool_name == "operator_artwork"
+                and call_args.get("action") == "get"
+                and call_args.get("variant") != "preview"
+            ):
+                logger.info(
+                    f"[MCP] operator_artwork variant={call_args.get('variant')} 调用异常，降级 preview 重试"
+                )
+                call_args["variant"] = "preview"
+                try:
+                    raw = await manager.call_tool(tool_name, call_args)
+                    retry_payload = extract_mcp_result(raw, tool_name)
+                    if retry_payload.display.get("images"):
+                        return retry_payload
+                except Exception as retry_exc:
+                    logger.warning(f"[MCP] operator_artwork preview 重试失败: {retry_exc}")
             return ToolResultPayload(
                 llm_content=json.dumps(
                     {

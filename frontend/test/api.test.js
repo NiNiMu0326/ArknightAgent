@@ -210,6 +210,17 @@ describe('agentChat', () => {
     expect(warn).toHaveBeenCalled()
   })
 
+  it('throws when stream ends without a terminal event', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      sseResponse([{ type: 'answer_delta', delta: '还没说完' }])
+    )
+    const onAnswerDelta = vi.fn()
+    await expect(
+      api.agentChat({ sessionId: 's', message: 'm', onAnswerDelta })
+    ).rejects.toThrow('响应流未正常结束')
+    expect(onAnswerDelta).toHaveBeenCalled()
+  })
+
   it('sends model in request body when provided', async () => {
     global.fetch = vi.fn().mockResolvedValue(sseResponse([{ type: 'answer_done', answer: 'x' }]))
     await api.agentChat({ sessionId: 's', message: 'm', model: 'deepseek-v4-flash' })

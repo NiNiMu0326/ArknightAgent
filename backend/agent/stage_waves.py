@@ -16,11 +16,17 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Lazy caches (loaded once per process).
-_stage_table: Optional[Dict[str, Any]] = None
-_enemy_names: Optional[Dict[str, str]] = None
+# 工具结果大小保护：防止超长关卡的完整刷怪表撑爆 LLM 上下文
+MAX_STAGE_WAVES = 60
+MAX_STAGE_SPAWNS = 400
+
+# Lazy caches. 只有"加载成功"才缓存；数据目录缺失/损坏时下次调用会重试，
+# 这样 prts-mcp 在进程运行期间补完同步数据后无需重启后端即可生效。
+_stage_table: Dict[str, Any] = {}
+_stage_table_loaded: bool = False
+_enemy_names: Dict[str, str] = {}
+_enemy_names_loaded: bool = False
 _levels_root: Optional[Path] = None
-_levels_root_missing: bool = False
 
 
 def _share_root() -> Path:
@@ -40,28 +46,30 @@ def _latest_zh_dir(kind: str) -> Optional[Path]:
 
 
 def _load_stage_table() -> Dict[str, Any]:
-    global _stage_table
-    if _stage_table is not None:
+    global _stage_table, _stage_table_loaded
+    if _stage_table_loaded:
         return _stage_table
-    _stage_table = {}
     zh = _latest_zh_dir("gamedata")
     if zh:
         table_file = zh / "gamedata/excel/stage_table.json"
         try:
             with open(table_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            _stage_table = data.get("stages", {})
+            stages = data.get("stages", {})
+            if isinstance(stages, dict):
+                _stage_table = stages
+            _stage_table_loaded = True
             logger.info(f"[stage-waves] loaded {len(_stage_table)} stages")
         except Exception as exc:
             logger.warning(f"[stage-waves] load stage_table failed: {exc}")
+            _stage_table_loaded = False
     return _stage_table
 
 
 def _load_enemy_names() -> Dict[str, str]:
-    global _enemy_names
-    if _enemy_names is not None:
+    global _enemy_names, _enemy_names_loaded
+    if _enemy_names_loaded:
         return _enemy_names
-    _enemy_names = {}
     zh = _latest_zh_dir("gamedata")
     if zh:
         handbook = zh / "gamedata/excel/enemy_handbook_table.json"
@@ -73,23 +81,25 @@ def _load_enemy_names() -> Dict[str, str]:
                 for enemy_id, info in enemy_data.items():
                     if isinstance(info, dict) and info.get("name"):
                         _enemy_names[enemy_id] = str(info["name"])
+            _enemy_names_loaded = True
             logger.info(f"[stage-waves] loaded {len(_enemy_names)} enemy names")
         except Exception as exc:
             logger.warning(f"[stage-waves] load enemy handbook failed: {exc}")
+            _enemy_names_loaded = False
     return _enemy_names
 
 
 def _get_levels_root() -> Optional[Path]:
-    global _levels_root, _levels_root_missing
-    if _levels_root is not None or _levels_root_missing:
+    global _levels_root
+    if _levels_root is not None and _levels_root.exists():
         return _levels_root
+    _levels_root = None
     zh = _latest_zh_dir("gamedata-levels")
     if zh:
         candidate = zh / "gamedata/levels"
         if candidate.exists():
             _levels_root = candidate
             return _levels_root
-    _levels_root_missing = True
     return None
 
 
@@ -163,7 +173,8 @@ def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Flatten waves/fragments/actions into an ordered spawn sequence.
 
     关卡 JSON 通常只有一个 `waves` 元素，真正的“波次”体现在其 fragments
-    列表里，因此这里把每个 fragment 作为一个用户可见的波次。
+    列表里，因此这里把每个 fragment 作为一个用户可见的波次。只给真正
+    包含刷怪动作的 fragment 编号，避免 STORY 等无怪 fragment 造成跳号。
     """
     spawns: List[Dict[str, Any]] = []
     waves = level_data.get("waves", [])
@@ -180,10 +191,11 @@ def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         for fragment in fragments:
             if not isinstance(fragment, dict):
                 continue
-            wave_counter += 1
             actions = fragment.get("actions", [])
             if not isinstance(actions, list):
                 continue
+
+            fragment_spawns: List[Dict[str, Any]] = []
             for action in actions:
                 if not isinstance(action, dict):
                     continue
@@ -192,16 +204,23 @@ def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 # 只统计真正刷出的敌人；STORY/PREVIEW_CURSOR 等非刷怪动作跳过
                 if action_type != "SPAWN" or not enemy_key.startswith("enemy_"):
                     continue
-                spawns.append({
-                    "wave": wave_counter,
+                raw_count = action.get("count")
+                fragment_spawns.append({
                     "wave_pre_delay": float(fragment.get("preDelay", 0) or 0),
                     "enemy_id": enemy_key,
                     "enemy_name": _enemy_name(enemy_key),
-                    "count": int(action.get("count", 1) or 1),
+                    # count 缺失时默认 1；count=0 是原始数据，原样保留
+                    "count": int(raw_count) if raw_count is not None else 1,
                     "pre_delay": float(action.get("preDelay", 0) or 0),
                     "interval": float(action.get("interval", 0) or 0),
                     "route_index": action.get("routeIndex"),
                 })
+
+            if not fragment_spawns:
+                continue
+            wave_counter += 1
+            for entry in fragment_spawns:
+                spawns.append({"wave": wave_counter, **entry})
     return spawns
 
 
@@ -222,7 +241,7 @@ async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -
     if not level_data:
         return {
             "error": f"关卡 '{stage_key}' 的出怪数据文件不可用（未同步 levels 数据），"
-                     "可改用 get_stage_enemies 查看敌人列表与数量",
+                     "可改用工具列表中的关卡敌人工具查看敌人列表与数量",
         }
 
     spawns = _spawn_sequence(level_data)
@@ -241,11 +260,30 @@ async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -
             "route_index": spawn["route_index"],
         })
 
+    total_waves = len(waves)
+    truncated = False
+    kept_waves = []
+    kept_spawns = 0
+    for wave in waves:
+        if len(kept_waves) >= MAX_STAGE_WAVES or kept_spawns >= MAX_STAGE_SPAWNS:
+            truncated = True
+            break
+        kept_waves.append(wave)
+        kept_spawns += len(wave["spawns"])
+
+    note = "波次按关卡数据中的 fragments 划分，按出现顺序排列；pre_delay/interval 为关卡原始数据（秒），仅供参考"
+    if truncated:
+        note += (
+            f"；本关共 {total_waves} 波，结果过大已截断，仅展示前 {len(kept_waves)} 波，"
+            "如需后续波次请换用工具列表中的其他关卡工具或查询更精确的范围"
+        )
+
     return {
         "stage_code": stage_info.get("code", stage_key),
         "stage_id": stage_info.get("stageId", stage_key),
         "stage_name": stage_info.get("name", ""),
-        "total_waves": len(waves),
-        "waves": waves,
-        "note": "波次按关卡数据中的 fragments 划分，按出现顺序排列；pre_delay/interval 为关卡原始数据（秒），仅供参考",
+        "total_waves": total_waves,
+        "waves": kept_waves,
+        "truncated": truncated,
+        "note": note,
     }

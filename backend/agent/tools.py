@@ -26,7 +26,7 @@ TOOL_SCHEMAS = [
                     },
                     "top_k": {
                         "type": "integer",
-                        "description": "返回结果数量，默认5"
+                        "description": "返回结果数量，默认3；结果不足时可自行增大重试"
                     },
                     "search_mode": {
                         "type": "string",
@@ -86,7 +86,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "arknights_stage_waves",
-            "description": "查询指定关卡的出怪顺序（波次与刷怪顺序）。返回每波敌人出现的先后顺序、敌人名称、数量、间隔等。参数 stage_code 传关卡编号（如 1-7、CE-5、WD-EX-8）或关卡 ID（如 main_01-07）。注意：只查敌人种类与总数时用 get_stage_enemies，查先后顺序时用本工具。",
+            "description": "查询指定关卡的出怪顺序（波次与刷怪顺序）。返回每波敌人出现的先后顺序、敌人名称、数量、间隔等。参数 stage_code 传关卡编号（如 1-7、CE-5、WD-EX-8）或关卡 ID（如 main_01-07）。只返回出怪先后顺序与数量；敌人属性/总览请使用工具列表中的其他关卡工具。",
             "parameters": {
                 "type": "object",
                 "properties": {

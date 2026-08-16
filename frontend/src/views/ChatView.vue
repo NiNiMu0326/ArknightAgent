@@ -18,7 +18,7 @@
               :key="`${msg.role || 'pending'}-${idx}`"
               class="chat-message"
               :class="msg.role"
-              v-memo="[msg, expandedProcesses.length, expandedTools.length, expandedThinking.length, sessionStore.currentSession?.messages?.length, isLoading, editingIdx]"
+              v-memo="[msg, expandedProcesses.join(','), expandedTools.join(','), expandedThinking.join(','), sessionStore.currentSession?.messages?.length, isLoading, editingIdx]"
             >
               <!-- User message -->
               <template v-if="msg.role === 'user'">
@@ -517,8 +517,10 @@ const expandedThinking = ref([])
 const expandedProcesses = ref([])
 const zoomImage = ref(null)
 const zoomScale = ref(1)
+let lightboxKeyHandler = null
 const quickQuestionsEl = ref(null)
 const quickScrollState = reactive({ canLeft: false, canRight: false })
+let quickResizeObserver = null
 
 const toolItemRefs = reactive({})
 const currentRound = ref(0)
@@ -543,6 +545,8 @@ const nowTs = ref(Date.now())
 let elapsedTickerId = null
 // 每次 startAgentStream 递增；用于防止旧后台流结束时覆盖新流的 UI 状态/AbortController
 let streamGeneration = 0
+// 当前活动流（切会话时需要访问其局部状态：标记 thinking 已持久化，避免重复落库）
+let activeStreamState = null
 
 function startElapsedTicker() {
   if (elapsedTickerId !== null) return
@@ -591,11 +595,23 @@ onMounted(() => {
   window.addEventListener('resize', updateQuickScrollState)
   nextTick(updateQuickScrollState)
   setTimeout(updateQuickScrollState, 300)
+  // 内容宽度变化（字体/图片异步加载等）时同步箭头状态
+  nextTick(() => {
+    if (quickQuestionsEl.value) {
+      quickResizeObserver = new ResizeObserver(() => updateQuickScrollState())
+      quickResizeObserver.observe(quickQuestionsEl.value)
+    }
+  })
+  if (typeof document !== 'undefined' && document.fonts?.ready) {
+    document.fonts.ready.then(() => updateQuickScrollState()).catch(() => {})
+  }
 })
 
 // Component deactivated (switched to another page) — keep request running in background
 onDeactivated(() => {
   console.log('[ChatView] deactivated, request continues in background')
+  // 离开页面时关闭灯箱，避免 body 滚动锁带到其他路由
+  if (zoomImage.value) closeImageZoom()
 })
 
 // Component reactivated (switched back) — restore UI state
@@ -609,12 +625,28 @@ onUnmounted(() => {
   console.log('[ChatView] unmounted')
   stopElapsedTicker()
   window.removeEventListener('resize', updateQuickScrollState)
+  if (quickResizeObserver) {
+    quickResizeObserver.disconnect()
+    quickResizeObserver = null
+  }
+  if (lightboxKeyHandler) {
+    window.removeEventListener('keydown', lightboxKeyHandler)
+    lightboxKeyHandler = null
+  }
+  document.body.style.overflow = ''
 })
 
-// 快捷问题加载/刷新后，重新计算左右滚动箭头
+// 快捷问题加载/刷新后，重新计算左右滚动箭头。
+// 监听数组引用而不是 length：刷新后即使仍为 9 条，新内容宽度变化也能正确更新。
 watch(
-  () => quickQuestionsStore.quickActions?.length,
-  () => nextTick(updateQuickScrollState),
+  () => quickQuestionsStore.quickActions,
+  () => {
+    nextTick(() => {
+      const el = quickQuestionsEl.value
+      if (el) el.scrollLeft = 0
+      updateQuickScrollState()
+    })
+  },
 )
 
 // Watch for session changes to update lastResult
@@ -622,27 +654,42 @@ watch(() => sessionStore.currentSessionId, (newId, oldId) => {
   console.log('[ChatView] session changed from', oldId, 'to', newId)
 
   // 只有真正切换到不同会话时才清理流式输出状态
-  if (newId !== oldId) {
-    // 如果是从null到有效ID，可能是初始加载，不中止请求
-    if (oldId !== null) {
+  if (newId !== oldId && oldId !== null) {
+    // 如果是从null到有效ID，可能是初始加载，不中止请求；
+    // 其余情况下旧 SSE 流继续在后台运行，但要把它标记为非当前流。
+    if (isLoading.value) {
+      // 先把尚未刷入 currentAnswer 的 delta 落进展示缓冲，再完整保存 partial
+      flushPendingDelta()
       // Save in-progress content to the OLD session, then clear UI for the new session.
       // The SSE stream keeps running — its callbacks target the old sessionId, so the
       // final answer will land in the correct session even after the user switches away.
-      if (isLoading.value && currentThinking.value) {
+      if (currentThinking.value) {
         const thinkTime = thinkingStartTime.value ? Date.now() - thinkingStartTime.value : 0
         sessionStore.addThinkingMessageTo(oldId, currentRound.value, currentThinking.value, Math.round(thinkTime))
+        // 旧流后续（tool_calls_start / answer_done / catch）不再重复保存这段 thinking
+        if (activeStreamState) activeStreamState.thinkingPersisted = true
       }
       // Save partial answer with a marker so onAnswerDone can replace it
-      if (isLoading.value && currentAnswer.value) {
+      if (currentAnswer.value) {
         sessionStore.addMessageTo(oldId, 'assistant', currentAnswer.value + ' [回答中...]', { _partial: true })
       }
-      // Clear display refs but do NOT abort — the stream continues in background
-      isLoading.value = false
-      currentAnswer.value = ''
-      currentAnswerSources.value = null
-      currentThinking.value = ''
-      currentThinkingTimeMs.value = 0
+      // 旧流进入后台模式：只写旧会话，不再碰全局 UI 状态
+      streamGeneration += 1
     }
+
+    // Clear display refs but do NOT abort — the stream continues in background
+    isLoading.value = false
+    currentAnswer.value = ''
+    pendingAnswerDelta = ''
+    currentAnswerSources.value = null
+    currentThinking.value = ''
+    currentThinkingTimeMs.value = 0
+    currentRound.value = 0
+    thinkingStartTime.value = 0
+    // 展开状态跟随会话重置，避免新会话在相同索引处被旧状态错误展开
+    expandedThinking.value = []
+    expandedTools.value = []
+    expandedProcesses.value = []
   }
 
   // 切换会话时滚动到底部
@@ -785,7 +832,10 @@ function getAnswerImages(messages, assistantIdx) {
     for (const call of (msg.calls || [])) {
       const data = msg.results?.[call.id]?.data
       const list = Array.isArray(data?.images) ? data.images : []
-      for (const img of list) {
+      // 外层从后往前遍历消息（保证调用顺序），这里也从后往前 unshift，
+      // 这样同一工具返回多张图时，图库内部顺序不会反转。
+      for (let j = list.length - 1; j >= 0; j--) {
+        const img = list[j]
         if (img?.data_url && !seen.has(img.data_url)) {
           seen.add(img.data_url)
           images.unshift(img)
@@ -806,6 +856,23 @@ function closeImageZoom() {
   zoomImage.value = null
   zoomScale.value = 1
 }
+
+// 灯箱打开时：Esc 关闭 + 锁定背景滚动；关闭/卸载时恢复
+watch(zoomImage, (open) => {
+  if (lightboxKeyHandler) {
+    window.removeEventListener('keydown', lightboxKeyHandler)
+    lightboxKeyHandler = null
+  }
+  if (open) {
+    document.body.style.overflow = 'hidden'
+    lightboxKeyHandler = (event) => {
+      if (event.key === 'Escape') closeImageZoom()
+    }
+    window.addEventListener('keydown', lightboxKeyHandler)
+  } else {
+    document.body.style.overflow = ''
+  }
+})
 
 function handleZoomWheel(event) {
   if (!zoomImage.value) return
@@ -1012,10 +1079,15 @@ async function startAgentStream(content) {
 
   // 本次流的本地状态。切走会话后旧流继续在后台运行时，
   // 其 SSE 回调只更新这些局部变量与旧会话，不再污染新流的全局 UI 状态。
-  let streamThinking = ''
-  let streamThinkingStart = 0
-  let streamRound = 0
-  let streamPendingDelta = ''
+  // 用可变对象保存，切会话的 watch 才能标记 thinking 已持久化（避免重复落库）。
+  const streamState = {
+    thinking: '',
+    thinkingStart: 0,
+    round: 0,
+    pendingDelta: '',
+    thinkingPersisted: false,
+  }
+  activeStreamState = streamState
   const isCurrentStream = () => generation === streamGeneration
 
   // Capture session ID AFTER addMessage (which may create a new session)
@@ -1044,7 +1116,9 @@ async function startAgentStream(content) {
     } catch (e) {
       console.error('Failed to create backend session:', e)
       sessionStore.addMessage('assistant', '错误: 无法创建会话，请重试')
+      if (activeStreamState === streamState) activeStreamState = null
       isLoading.value = false
+      stopElapsedTicker()
       return
     }
   }
@@ -1067,39 +1141,40 @@ async function startAgentStream(content) {
       },
 
       onThinkingStart(event) {
-        streamRound = event.round || streamRound + 1
-        streamThinking = ''
-        streamThinkingStart = event.timestamp_ms || Date.now()
+        streamState.round = event.round || streamState.round + 1
+        streamState.thinking = ''
+        streamState.thinkingPersisted = false
+        streamState.thinkingStart = event.timestamp_ms || Date.now()
         if (isCurrentStream()) {
-          currentRound.value = streamRound
+          currentRound.value = streamState.round
           currentThinking.value = ''
           currentThinkingTimeMs.value = 0
-          thinkingStartTime.value = streamThinkingStart
+          thinkingStartTime.value = streamState.thinkingStart
         }
       },
 
       onToolCallsStart(event) {
         // Save any accumulated thinking content as a thinking message（始终写入本次流所属会话）
-        if (streamThinking) {
-          const thinkTime = streamThinkingStart ? Date.now() - streamThinkingStart : 0
-          sessionStore.addThinkingMessageTo(streamSessionId, streamRound, streamThinking, Math.round(thinkTime))
-          streamThinking = ''
+        if (streamState.thinking && !streamState.thinkingPersisted) {
+          const thinkTime = streamState.thinkingStart ? Date.now() - streamState.thinkingStart : 0
+          sessionStore.addThinkingMessageTo(streamSessionId, streamState.round, streamState.thinking, Math.round(thinkTime))
         }
+        streamState.thinking = ''
         // Discard any stray answer content (tool round doesn't produce final answer)
-        streamPendingDelta = ''
-        streamRound = event.round || streamRound + 1
+        streamState.pendingDelta = ''
+        streamState.round = event.round || streamState.round + 1
         const calls = event.tool_calls.map(tc => ({
           id: tc.id,
           name: tc.name,
           arguments_summary: summarizeToolArgs(tc.name, tc.arguments),
         }))
-        sessionStore.addToolCallMessage(calls, streamRound, streamSessionId)
+        sessionStore.addToolCallMessage(calls, streamState.round, streamSessionId)
         if (isCurrentStream()) {
           currentAnswer.value = ''
           pendingAnswerDelta = ''
           currentThinking.value = ''
           currentThinkingTimeMs.value = 0
-          currentRound.value = streamRound
+          currentRound.value = streamState.round
           // 生成期间默认展开「工具调用 N 轮」过程卡片；answer_done 后再整体折叠
           const streamMessages = sessionStore.sessions[streamSessionId]?.messages
           if (streamMessages?.length) {
@@ -1127,7 +1202,7 @@ async function startAgentStream(content) {
 
       onAnswerDelta(event) {
         // Backend already parses <think/> tags, so content_delta is pure answer text
-        streamPendingDelta += event.delta || ''
+        streamState.pendingDelta += event.delta || ''
         if (isCurrentStream()) {
           pendingAnswerDelta += event.delta || ''
           if (!userAtBottom.value) hasNewContent.value = true
@@ -1136,7 +1211,7 @@ async function startAgentStream(content) {
       },
 
       onThinkingDelta(event) {
-        streamThinking += event.content || ''
+        streamState.thinking += event.content || ''
         if (isCurrentStream()) {
           currentThinking.value += event.content || ''
           if (!userAtBottom.value) hasNewContent.value = true
@@ -1150,7 +1225,7 @@ async function startAgentStream(content) {
         // Replace accumulated thinking with complete content from backend
         // This ensures we have the full thinking even if delta streaming was incomplete
         if (event.reasoning_content) {
-          streamThinking = event.reasoning_content
+          streamState.thinking = event.reasoning_content
           if (isCurrentStream()) {
             currentThinking.value = event.reasoning_content
           }
@@ -1158,18 +1233,19 @@ async function startAgentStream(content) {
       },
 
       onAnswerDone(event) {
-        const thinkTime = streamThinkingStart ? Date.now() - streamThinkingStart : 0
-        // Save thinking as independent message if present（始终写入本次流所属会话）
-        if (streamThinking) {
-          sessionStore.addThinkingMessageTo(streamSessionId, streamRound, streamThinking, Math.round(thinkTime))
+        const thinkTime = streamState.thinkingStart ? Date.now() - streamState.thinkingStart : 0
+        // Save thinking as independent message if present（始终写入本次流所属会话；
+        // 若切会话时已保存过 partial，则不重复落库）
+        if (streamState.thinking && !streamState.thinkingPersisted) {
+          sessionStore.addThinkingMessageTo(streamSessionId, streamState.round, streamState.thinking, Math.round(thinkTime))
         }
         // Filter <think/> tags from the final answer
         const rawAnswer = event.answer || (isCurrentStream()
           ? (currentAnswer.value + pendingAnswerDelta)
-          : streamPendingDelta)
+          : streamState.pendingDelta)
         const { text: cleanAnswer, thinking: trailingThinking } = extractThinkContent(rawAnswer)
-        if (trailingThinking && !streamThinking) {
-          sessionStore.addThinkingMessageTo(streamSessionId, streamRound, trailingThinking)
+        if (trailingThinking && !streamState.thinking) {
+          sessionStore.addThinkingMessageTo(streamSessionId, streamState.round, trailingThinking)
         }
         // Write complete answer; remove any partial answer the session-switch handler
         // may have saved (to avoid duplicate assistant messages)
@@ -1198,18 +1274,38 @@ async function startAgentStream(content) {
 
       onError(event) {
         console.error('Agent error:', event.message)
-        // 错误始终写入本次流所属会话；旧后台流不覆盖新会话的展示层状态
+        // 错误始终写入本次流所属会话；旧后台流不覆盖新会话的展示层状态。
+        // 与 catch 分支一致：先保存已生成的 thinking / partial 回答，再追加错误消息。
+        if (isCurrentStream()) flushPendingDelta()
+        if (streamState.thinking && !streamState.thinkingPersisted) {
+          const thinkTime = streamState.thinkingStart ? Date.now() - streamState.thinkingStart : 0
+          sessionStore.addThinkingMessageTo(streamSessionId, streamState.round, streamState.thinking, Math.round(thinkTime))
+        }
+        streamState.thinking = ''
+        streamState.thinkingPersisted = true
+
+        const partialAnswer = isCurrentStream() ? currentAnswer.value : streamState.pendingDelta
+        if (partialAnswer) {
+          sessionStore.replaceLastAssistantIfPartial(streamSessionId, partialAnswer + ' [已中断]')
+        }
+        streamState.pendingDelta = ''
         sessionStore.addMessageTo(streamSessionId, 'assistant', `错误: ${event.message || '未知错误'}`)
+        if (isCurrentStream()) {
+          currentThinking.value = ''
+          currentThinkingTimeMs.value = 0
+          currentAnswer.value = ''
+          pendingAnswerDelta = ''
+        }
       },
     })
   } catch (error) {
     // 保存本次流的局部 partial 状态。旧后台流只写自己的会话，不碰当前 UI。
     if (isCurrentStream()) flushPendingDelta()
-    const partialThinking = streamThinking
+    const partialThinking = streamState.thinking
     const partialAnswer = isCurrentStream()
       ? currentAnswer.value
-      : streamPendingDelta
-    const partialThinkTime = streamThinkingStart ? Date.now() - streamThinkingStart : 0
+      : streamState.pendingDelta
+    const partialThinkTime = streamState.thinkingStart ? Date.now() - streamState.thinkingStart : 0
 
     if (isCurrentStream()) {
       currentThinking.value = ''
@@ -1218,24 +1314,31 @@ async function startAgentStream(content) {
 
     if (error.name === 'AbortError') {
       console.log('[ChatView] Request aborted')
-      if (partialThinking) {
-        sessionStore.addThinkingMessageTo(streamSessionId, streamRound, partialThinking, Math.round(partialThinkTime))
+      if (partialThinking && !streamState.thinkingPersisted) {
+        sessionStore.addThinkingMessageTo(streamSessionId, streamState.round, partialThinking, Math.round(partialThinkTime))
       }
       if (partialAnswer) {
-        sessionStore.addMessageTo(streamSessionId, 'assistant', partialAnswer + ' [已中断]')
+        sessionStore.replaceLastAssistantIfPartial(streamSessionId, partialAnswer + ' [已中断]')
       }
     } else {
       console.error('[ChatView] Agent chat error:', error)
-      if (partialThinking) {
-        sessionStore.addThinkingMessageTo(streamSessionId, streamRound, partialThinking, 0)
+      if (partialThinking && !streamState.thinkingPersisted) {
+        sessionStore.addThinkingMessageTo(streamSessionId, streamState.round, partialThinking, 0)
       }
-      sessionStore.addMessageTo(streamSessionId, 'assistant', partialAnswer || `错误: ${error.message}`)
+      sessionStore.replaceLastAssistantIfPartial(streamSessionId, partialAnswer || `错误: ${error.message}`)
     }
   }
 
   // 流结束（正常完成/出错/被中断）时，把仍未返回结果的工具调用标记为"已中断"，
   // 避免它们永远停留在"执行中..."状态（始终写本次流所属会话）
   sessionStore.finalizePendingToolCalls(streamSessionId)
+
+  // 本流结束后，不再允许切会话逻辑通过 activeStreamState 修改它。
+  // 若它仍是"唯一活动流"（后台旧流结束且没有新流），顺带停止耗时 ticker。
+  if (activeStreamState === streamState) {
+    activeStreamState = null
+    stopElapsedTicker()
+  }
 
   // 只有当前活动流才能清理/更新全局 UI 状态与 AbortController；
   // 旧后台流结束不能覆盖新流的 isLoading/stop 按钮等状态。
@@ -1274,6 +1377,8 @@ function summarizeToolArgs(toolName, args) {
       return `搜索: "${args.query || ''}"`
     case 'arknights_structured_query':
       return `SQL: "${(args.sql || '').substring(0, 60)}"`
+    case 'arknights_stage_waves':
+      return `关卡: ${args.stage_code || args.stage_id || ''}`
     default:
       if (isMcpTool(toolName)) return summarizeMcpToolArgs(toolName, args)
       return JSON.stringify(args).substring(0, 80)

@@ -35,11 +35,21 @@ class TestSystemPrompt:
         assert "semantic" in SYSTEM_PROMPT
         assert "balanced" in SYSTEM_PROMPT
 
-    def test_prompt_contains_mcp_tool_names(self):
-        assert "get_stage_enemies" in SYSTEM_PROMPT
-        assert "get_item_info" in SYSTEM_PROMPT
-        assert "operator_artwork" in SYSTEM_PROMPT
-        assert "search_prts" in SYSTEM_PROMPT
+    def test_prompt_contains_local_tool_names(self):
+        """Local tools are guided by prompt; MCP tools come from dynamic schemas."""
+        assert "arknights_rag_search" in SYSTEM_PROMPT
+        assert "arknights_graphrag_search" in SYSTEM_PROMPT
+        assert "web_search" in SYSTEM_PROMPT
+        assert "arknights_structured_query" in SYSTEM_PROMPT
+        assert "arknights_stage_waves" in SYSTEM_PROMPT
+
+    def test_prompt_does_not_hardcode_mcp_tool_names(self):
+        """MCP 工具通过动态注册的 tool schemas 提供给模型，prompt 不再硬编码，
+        避免 MCP 未连接时引导模型调用不存在的工具。"""
+        assert "get_stage_enemies" not in SYSTEM_PROMPT
+        assert "get_item_info" not in SYSTEM_PROMPT
+        assert "operator_artwork" not in SYSTEM_PROMPT
+        assert "search_prts" not in SYSTEM_PROMPT
 
     def test_prompt_contains_safety_constraints(self):
         """Should contain safety rules."""

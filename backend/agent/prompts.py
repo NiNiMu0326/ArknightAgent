@@ -15,10 +15,6 @@ SYSTEM_PROMPT = """# \u89d2\u8272
 - 知识库没有或需要最新信息 → web_search
 - 查数值比较/排序/统计（如"攻击力>700""6星按防御排序"） → arknights_structured_query
 - 查关卡出怪顺序/先后波次 → arknights_stage_waves(stage_code="1-7" 或 "main_01-07")
-- 查关卡详情/关卡敌人种类与数量/关卡内敌人属性 → get_stage_info / get_stage_enemies / get_enemy_info
-- 查材料用途、掉落、获取途径 → list_items / get_item_info
-- 名称或关卡 ID 不确定时 → 先用 search_prts 解析
-- 查干员立绘/时装 → operator_artwork（先 action="list" 拿 artwork_id，再 action="get" 取图）
 
 # search_mode \u9009\u62e9\u89c4\u5219
 - precise\uff1a\u67e5\u5355\u4e2a\u5e72\u5458\u7684\u5c5e\u6027\u3001\u6280\u80fd\u540d\u79f0\u3001\u654c\u4eba\u4ecb\u7ecd\u7b49\u6587\u672c\u4fe1\u606f\u65f6\u4f7f\u7528\u3002\u82e5\u9700\u6bd4\u8f83/\u6392\u5e8f/\u7edf\u8ba1\u591a\u4e2a\u5e72\u5458\u6216\u654c\u4eba\u7684\u6570\u503c\uff0c\u8bf7\u4f7f\u7528 arknights_structured_query\u3002query \u7528\u5173\u952e\u8bcd\u5f62\u5f0f\uff08\u5982\u201c\u94f6\u7070 \u653b\u51fb\u529b\u201d\u800c\u975e\u201c\u94f6\u7070\u7684\u653b\u51fb\u529b\u662f\u591a\u5c11\u201d\uff09

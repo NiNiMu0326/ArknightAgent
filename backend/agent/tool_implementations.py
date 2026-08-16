@@ -99,9 +99,9 @@ async def execute_rag_search(arguments: Dict[str, Any], session_id: str = "") ->
     """
     query = arguments.get("query", "")
     try:
-        top_k = max(1, min(int(arguments.get("top_k", 8)), _MAX_RAG_TOP_K))
+        top_k = max(1, min(int(arguments.get("top_k", 3)), _MAX_RAG_TOP_K))
     except (TypeError, ValueError):
-        top_k = 8
+        top_k = 3
     enable_parent_expansion = arguments.get("enable_parent_expansion", True)
     search_mode = arguments.get("search_mode", "balanced")
     vector_weight = _MODE_WEIGHTS.get(search_mode, 0.5)

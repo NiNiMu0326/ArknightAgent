@@ -119,6 +119,19 @@ class TestExtractMcpResult:
         assert payload.display["structured"]["_truncated"] is True
         assert "长" * 60_000 not in payload.llm_content
 
+    def test_long_text_content_is_truncated_for_llm_and_display(self):
+        long_text = "源石" * 60_000
+        raw = make_call_result(
+            content=[SimpleNamespace(type="text", text=long_text)],
+            structured=None,
+        )
+        payload = extract_mcp_result(raw, "search_prts")
+        # LLM 与前端展示都不应携带 12 万字符的原始文本
+        assert len(payload.llm_content) < 20_000
+        assert len(payload.display["text"]) < 60_000
+        assert "已截断" in payload.llm_content
+        assert long_text not in payload.llm_content
+
 
 class TestRegisterMcpTools:
     class FakeRegistry:
@@ -182,6 +195,34 @@ class TestRegisterMcpTools:
                         )],
                         structured=None,
                     )
+                return make_call_result(
+                    content=[
+                        SimpleNamespace(type="text", text="ok preview"),
+                        SimpleNamespace(type="image", mime_type="image/png", data="QUJD"),
+                    ],
+                    structured=None,
+                )
+
+        fake = FakeManager()
+        executor = make_mcp_executor(fake, "operator_artwork")
+        payload = asyncio.run(executor({
+            "action": "get",
+            "operator_name": "陈",
+            "artwork_id": "立绘_陈_2.png",
+            "variant": "large",
+        }))
+        assert [c["variant"] for c in fake.calls] == ["large", "preview"]
+        assert payload.display["images"][0]["data_url"] == "data:image/png;base64,QUJD"
+
+    def test_executor_falls_back_to_preview_when_large_raises(self):
+        class FakeManager:
+            def __init__(self):
+                self.calls = []
+
+            async def call_tool(self, name, arguments):
+                self.calls.append(dict(arguments))
+                if arguments.get("variant") == "large":
+                    raise RuntimeError("image exceeds 1048576 byte cap")
                 return make_call_result(
                     content=[
                         SimpleNamespace(type="text", text="ok preview"),
