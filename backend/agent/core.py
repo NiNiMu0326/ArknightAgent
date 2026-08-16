@@ -11,6 +11,7 @@ import re
 from typing import AsyncGenerator, Dict, List, Any, Tuple
 
 from backend.agent.sessions import SessionManager
+from backend.agent.tool_result import ToolResultPayload
 from backend.agent.prompts import build_messages
 from backend.agent.tools import ToolRegistry, get_tool_registry
 from backend.api.deepseek import ToolCall, STREAM_EVENT_THINKING_DELTA, STREAM_EVENT_CONTENT_DELTA, STREAM_EVENT_TOOL_CALLS, STREAM_EVENT_DONE
@@ -286,6 +287,9 @@ def _format_repeated_tool_reminder(counts: Dict[str, int]) -> str:
 
 # ===== Tool Execution =====
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def _sanitize_unicode(obj: Any) -> Any:
     """Recursively sanitize unicode surrogates in strings within an object.
 
@@ -293,7 +297,7 @@ def _sanitize_unicode(obj: Any) -> Any:
     encoding failures downstream. Replace them with U+FFFD.
     """
     if isinstance(obj, str):
-        return obj.encode("utf-8", errors="replace").decode("utf-8")
+        return _SURROGATE_RE.sub("\ufffd", obj)
     elif isinstance(obj, dict):
         return {k: _sanitize_unicode(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -311,7 +315,13 @@ async def execute_tool(registry: ToolRegistry, tool_call: ToolCall, session_id: 
     logger.info(f"[TOOL EXEC] {tool_call.name} args={json.dumps(args, ensure_ascii=False)[:200]}")
     try:
         result = await registry.execute(tool_call.name, args, session_id=session_id)
-        result = _sanitize_unicode(result)
+        if isinstance(result, ToolResultPayload):
+            result = ToolResultPayload(
+                llm_content=_sanitize_unicode(result.llm_content),
+                display=_sanitize_unicode(result.display),
+            )
+        else:
+            result = _sanitize_unicode(result)
         logger.info(f"[TOOL EXEC DONE] {tool_call.name} result_type={type(result).__name__}")
         return result
     except Exception as e:
@@ -565,21 +575,23 @@ async def _agent_loop_unlocked(
         # Record each tool result and notify frontend（严格按 LLM 输出顺序）
         for index, (_, result, elapsed_ms) in enumerate(timed_results):
             tc = tool_calls[index]
-            session.add_tool_result(tc.id, result)
+            llm_result = result.llm_content if isinstance(result, ToolResultPayload) else result
+            display_result = result.display if isinstance(result, ToolResultPayload) else result
+            session.add_tool_result(tc.id, llm_result)
             # Log tool result summary
             result_summary = ""
-            if isinstance(result, list):
-                result_summary = f"{len(result)} items"
-            elif isinstance(result, dict):
-                result_summary = result.get("error", "") or f"keys={list(result.keys())[:5]}"
+            if isinstance(display_result, list):
+                result_summary = f"{len(display_result)} items"
+            elif isinstance(display_result, dict):
+                result_summary = display_result.get("error", "") or f"keys={list(display_result.keys())[:5]}"
             else:
-                result_summary = str(result)[:100]
+                result_summary = str(display_result)[:100]
             logger.info(f"[TOOL RESULT] {tc.name} ({elapsed_ms:.0f}ms): {result_summary}")
-            yield format_tool_call_result(tc.id, result, time_ms=elapsed_ms, tool_name=tc.name)
+            yield format_tool_call_result(tc.id, display_result, time_ms=elapsed_ms, tool_name=tc.name)
 
             # Collect source citations from tool results
-            if tc.name == 'arknights_rag_search' and isinstance(result, list):
-                for item in result:
+            if tc.name == 'arknights_rag_search' and isinstance(llm_result, list):
+                for item in llm_result:
                     cid = item.get('chunk_id')
                     coll = item.get('source', '')
                     if cid and cid not in collected_sources:
@@ -587,8 +599,8 @@ async def _agent_loop_unlocked(
                             'chunk_id': cid,
                             'collection': coll,
                         }
-            elif tc.name == 'web_search' and isinstance(result, list):
-                for item in result:
+            elif tc.name == 'web_search' and isinstance(llm_result, list):
+                for item in llm_result:
                     url = item.get('url', '')
                     if url and url not in collected_sources:
                         collected_sources[url] = {
@@ -606,7 +618,9 @@ async def _agent_loop_unlocked(
                 tool_name=tc.name,
                 round_num=round_num,
                 args=args,
-                result_summary=_summarize_tool_result(result),
+                result_summary=_summarize_tool_result(
+                    result.display if isinstance(result, ToolResultPayload) else result
+                ),
                 latency_ms=elapsed_ms,
             )
 

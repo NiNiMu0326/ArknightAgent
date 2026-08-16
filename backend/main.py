@@ -68,10 +68,75 @@ from backend.config import (
 from backend.agent.sessions import SessionManager
 from backend.agent.core import agent_loop
 from backend.api.llm_factory import get_available_models, DEFAULT_MODEL
+from backend.agent.tools import get_tool_registry
+from backend.quick_questions import (
+    STRUCTURED_TEMPLATES,
+    PRTS_MCP_TEMPLATES,
+    pick_template,
+    pick_rag_question,
+)
 
 # ============== Lifespan ==============
 
 TRACE_RETENTION_DAYS = 30  # 本地 trace 保留时长，超期自动清理
+
+_mcp_manager: Optional[Any] = None
+_mcp_registered_count = 0
+
+
+async def _start_prts_mcp():
+    """Start prts-mcp and register allowlisted tools. Failure is non-fatal."""
+    global _mcp_manager, _mcp_registered_count
+    if not config.PRTS_MCP_ENABLED:
+        logger.info("[MCP] PRTS_MCP_ENABLED=false, skipping MCP startup")
+        return
+
+    # 延迟导入：mcp 依赖 Python>=3.10，未安装时也要允许 PRTS_MCP_ENABLED=false 启动
+    from backend.agent.mcp_client import McpClientManager, register_mcp_tools
+
+    manager = McpClientManager(
+        command=config.PRTS_MCP_COMMAND,
+        env={
+            "PRTS_OUTPUT_CHANNEL": "both",
+            "LOCAL_IMAGE": "false",
+            "PRTS_IMAGE_CACHE": "true",
+            "IMAGES_ENABLED": "true",
+        },
+        connect_timeout=config.PRTS_MCP_CONNECT_TIMEOUT,
+        call_timeout=config.PRTS_MCP_CALL_TIMEOUT,
+    )
+    try:
+        await manager.start()
+        count = register_mcp_tools(get_tool_registry(), manager)
+        _mcp_registered_count = count
+        _mcp_manager = manager
+        logger.info(f"[MCP] prts-mcp ready: {count} tools registered")
+    except Exception as exc:
+        manager.last_error = manager.last_error or str(exc)
+        if manager.connected:
+            try:
+                await manager.close()
+            except Exception as close_exc:
+                logger.warning(f"[MCP] close after registration failure failed: {close_exc}")
+        _mcp_registered_count = 0
+        _mcp_manager = manager  # 保留对象，/status 可读到 last_error
+        logger.warning(f"[MCP] prts-mcp unavailable, continuing without MCP tools: {exc}")
+
+
+async def _stop_prts_mcp():
+    global _mcp_manager
+    if _mcp_manager is not None:
+        await _mcp_manager.close()
+        _mcp_manager = None
+
+
+def _mcp_status() -> dict:
+    if not config.PRTS_MCP_ENABLED:
+        return {"enabled": False, "connected": False, "tool_count": 0}
+    if _mcp_manager is not None and _mcp_manager.connected:
+        return {"enabled": True, "connected": True, "tool_count": _mcp_registered_count}
+    error = _mcp_manager.last_error if _mcp_manager is not None else "not started"
+    return {"enabled": True, "connected": False, "tool_count": 0, "error": error}
 
 
 async def _cleanup_old_traces():
@@ -106,8 +171,10 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("SILICONFLOW_API_KEY 环境变量未设置，拒绝启动。请在 .env 中配置。")
     await init_db()
     retention_task = asyncio.create_task(_trace_retention_loop())
+    await _start_prts_mcp()
     yield
     retention_task.cancel()
+    await _stop_prts_mcp()
 
 
 # ============== FastAPI App ==============
@@ -317,6 +384,7 @@ async def status():
     return {
         "status": "healthy",
         "api_key_configured": bool(config.SILICONFLOW_API_KEY),
+        "mcp": _mcp_status(),
         "embedding_model": config.EMBEDDING_MODEL,
         "reranker_model": config.RERANKER_MODEL,
         "llm_model": config.DEEPSEEK_LLM_MODEL or "not configured"
@@ -1153,22 +1221,11 @@ def _load_qq_data():
         pass
 
 
-def _pick_excluding(candidates: list, label_suffix: str, exclude_labels: set, key=lambda x: x) -> Optional[str]:
-    """Pick a random item from candidates whose derived label is not in exclude_labels.
-    Tries up to 20 times, then falls back to random choice."""
-    for _ in range(20):
-        chosen = random.choice(candidates)
-        label = f"{key(chosen)}{label_suffix}"
-        if label not in exclude_labels:
-            return chosen, label
-    # All excluded — just pick random
-    chosen = random.choice(candidates)
-    return chosen, f"{key(chosen)}{label_suffix}"
 
 
 @app.get("/quick-questions")
 async def get_quick_questions(refresh: bool = False):
-    """生成5个快速问题，基于GraphRAG图数据和别名信息。"""
+    """生成4个快速问题，按 RAG/GraphRAG/结构化查询/PRTS-MCP 能力分类各一个。"""
     global _quick_questions_cache, _quick_questions_cache_time, _qq_previous_labels
 
     now = time.time()
@@ -1218,113 +1275,62 @@ async def get_quick_questions(refresh: bool = False):
                         questions.append({
                             "label": relation_label,
                             "question": f"{node_a}和{node_b}的关系",
-                            "type": "relation",
+                            "type": "relation", "category": "graph",
                         })
                         exclude_labels.add(relation_label)
                         break
             if not questions:  # no relation found after all attempts
-                # Fallback: two random operators
                 if len(op_nodes) >= 2:
                     a, b = random.sample(op_nodes, 2)
                     label = f"{a}/{b}关系"
-                    questions.append({
-                        "label": label,
-                        "question": f"{a}和{b}的关系",
-                        "type": "relation",
-                    })
-                    exclude_labels.add(label)
-        else:
-            questions.append({
-                "label": "银灰/初雪关系",
-                "question": "银灰和初雪的关系",
-                "type": "relation",
-            })
-    except Exception as e:
-        logger.error(f"Failed to generate relation question: {e}")
-        questions.append({
-            "label": "银灰/初雪关系",
-            "question": "银灰和初雪的关系",
-            "type": "relation",
-        })
-
-    # ===== 2. 技能问题：随机干员（内存中的预加载数据） =====
-    if _qq_operator_names:
-        chosen, label = _pick_excluding(_qq_operator_names, "技能", exclude_labels)
-        questions.append({
-            "label": label,
-            "question": f"{chosen}的技能是什么",
-            "type": "skill",
-        })
-        exclude_labels.add(label)
-    else:
-        questions.append({
-            "label": "银灰技能",
-            "question": "银灰的技能是什么",
-            "type": "skill",
-        })
-
-    # ===== 3. 故事问题：随机故事 =====
-    if _qq_story_names:
-        chosen, label = _pick_excluding(_qq_story_names, "故事", exclude_labels)
-        questions.append({
-            "label": label,
-            "question": f"{chosen}的故事内容",
-            "type": "story",
-        })
-        exclude_labels.add(label)
-    else:
-        questions.append({
-            "label": "乌萨斯的孩子们故事",
-            "question": "乌萨斯的孩子们的故事内容",
-            "type": "story",
-        })
-
-    # ===== 4. 敌人问题：随机敌人 =====
-    if _qq_enemy_names:
-        chosen, label = _pick_excluding(_qq_enemy_names, "敌人", exclude_labels)
-        questions.append({
-            "label": label,
-            "question": f"{chosen}的属性和能力是什么",
-            "type": "enemy",
-        })
-        exclude_labels.add(label)
-    else:
-        questions.append({
-            "label": "源石虫敌人",
-            "question": "源石虫的属性和能力是什么",
-            "type": "enemy",
-        })
-
-    # ===== 5. 别名问题：有多个别名的干员 =====
-    if _qq_alias_candidates:
-        # Pick excluding by the operator name part of the label
-        for _ in range(20):
-            chosen_name, aliases = random.choice(_qq_alias_candidates)
-            label = f"{chosen_name}别名"
-            if label not in exclude_labels:
+                    question = f"{a}和{b}的关系"
+                else:
+                    label = "银灰/初雪关系"
+                    question = "银灰和初雪的关系"
                 questions.append({
                     "label": label,
-                    "question": f"{chosen_name}的其他名称有哪些",
-                    "type": "alias",
+                    "question": question,
+                    "type": "relation", "category": "graph",
                 })
                 exclude_labels.add(label)
-                break
         else:
-            # All excluded, just pick random
-            chosen_name, aliases = random.choice(_qq_alias_candidates)
-            label = f"{chosen_name}别名"
+            label = "银灰/初雪关系"
             questions.append({
                 "label": label,
-                "question": f"{chosen_name}的其他名称有哪些",
-                "type": "alias",
+                "question": "银灰和初雪的关系",
+                "type": "relation", "category": "graph",
             })
             exclude_labels.add(label)
-    else:
+    except Exception as e:
+        logger.error(f"Failed to generate relation question: {e}")
+        label = "银灰/初雪关系"
         questions.append({
-            "label": "银灰别名",
-            "question": "银灰的其他名称有哪些",
-            "type": "alias",
+            "label": label,
+            "question": "银灰和初雪的关系",
+            "type": "relation", "category": "graph",
         })
+        exclude_labels.add(label)
+
+    # ===== RAG 能力：技能/故事/敌人/别名四类模板随机轮换 =====
+    rag_question = pick_rag_question(
+        _qq_operator_names or [],
+        _qq_story_names or [],
+        _qq_enemy_names or [],
+        _qq_alias_candidates or [],
+        exclude_labels,
+    )
+    questions.append(rag_question)
+    exclude_labels.add(rag_question["label"])
+
+    # ===== 结构化查询能力 =====
+    structured_question = pick_template(STRUCTURED_TEMPLATES, exclude_labels)
+    questions.append(structured_question)
+    exclude_labels.add(structured_question["label"])
+
+    # ===== PRTS-MCP 能力 =====
+    mcp_question = pick_template(PRTS_MCP_TEMPLATES, exclude_labels)
+    questions.append(mcp_question)
+    exclude_labels.add(mcp_question["label"])
 
     # Update caches
     _quick_questions_cache = questions

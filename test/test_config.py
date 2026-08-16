@@ -2,9 +2,14 @@
 Tests for backend.config: paths, API keys, model settings.
 Usage: cd test && python -m pytest test_config.py -v
 """
+import importlib
+import os
+import subprocess
 import sys
-import pytest
 from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend import config
@@ -132,3 +137,114 @@ class TestJWTSecret:
         """conftest.py sets JWT_SECRET for tests."""
         import os
         assert os.environ.get("JWT_SECRET") == "test-jwt-secret-for-tests"
+
+
+# ============================================================
+# _env_bool
+# ============================================================
+
+class TestEnvBool:
+    """_env_bool 环境变量布尔解析。"""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("true", True),
+            ("TRUE", True),
+            ("1", True),
+            ("yes", True),
+            ("ON", True),
+            ("false", False),
+            ("0", False),
+            ("no", False),
+            ("  true  ", True),
+        ],
+    )
+    def test_parse_values(self, monkeypatch, raw, expected):
+        monkeypatch.setenv("TEST_ENV_BOOL", raw)
+        assert config._env_bool("TEST_ENV_BOOL", not expected) is expected
+
+    def test_missing_env_uses_default_true(self, monkeypatch):
+        monkeypatch.delenv("TEST_ENV_BOOL", raising=False)
+        assert config._env_bool("TEST_ENV_BOOL", True) is True
+
+    def test_missing_env_uses_default_false(self, monkeypatch):
+        monkeypatch.delenv("TEST_ENV_BOOL", raising=False)
+        assert config._env_bool("TEST_ENV_BOOL", False) is False
+
+    def test_unknown_value_is_false(self, monkeypatch):
+        monkeypatch.setenv("TEST_ENV_BOOL", "tru")
+        assert config._env_bool("TEST_ENV_BOOL", True) is False
+
+
+# ============================================================
+# PRTS MCP 配置
+# ============================================================
+
+class TestPrtsMcpConfig:
+    """PRTS MCP 配置项（测试环境由 conftest 关闭）。"""
+
+    def _probe_default(self, pop_keys, expr):
+        repo_root = Path(__file__).resolve().parents[1]
+        clean_env = os.environ.copy()
+        for key in pop_keys:
+            clean_env.pop(key, None)
+        code = (
+            "import dotenv; dotenv.load_dotenv=lambda *a, **k: None; "
+            f"import backend.config as c; print({expr})"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=repo_root,
+            env={**clean_env, "PYTHONPATH": str(repo_root)},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, f"subprocess failed:\n{proc.stderr}"
+        return proc.stdout.strip()
+
+    def test_prts_mcp_disabled_in_tests(self):
+        assert config.PRTS_MCP_ENABLED is False
+
+    def test_prts_mcp_command_default(self):
+        assert self._probe_default(["PRTS_MCP_COMMAND"], "c.PRTS_MCP_COMMAND") == "prts-mcp"
+
+    def test_prts_mcp_connect_timeout_default(self):
+        assert self._probe_default(["PRTS_MCP_CONNECT_TIMEOUT"], "c.PRTS_MCP_CONNECT_TIMEOUT") == "10.0"
+
+    def test_prts_mcp_call_timeout_default(self):
+        assert self._probe_default(["PRTS_MCP_CALL_TIMEOUT"], "c.PRTS_MCP_CALL_TIMEOUT") == "60.0"
+
+    def test_default_enabled_true_when_env_absent(self):
+        assert self._probe_default(["PRTS_MCP_ENABLED"], "c.PRTS_MCP_ENABLED") == "True"
+
+    def test_invalid_timeout_raises(self, monkeypatch):
+        monkeypatch.setenv("PRTS_MCP_CONNECT_TIMEOUT", "abc")
+        try:
+            with pytest.raises(ValueError):
+                importlib.reload(config)
+        finally:
+            monkeypatch.delenv("PRTS_MCP_CONNECT_TIMEOUT", raising=False)
+            importlib.reload(config)
+
+    def test_negative_timeout_raises(self, monkeypatch):
+        monkeypatch.setenv("PRTS_MCP_CONNECT_TIMEOUT", "-1")
+        try:
+            with pytest.raises(ValueError):
+                importlib.reload(config)
+        finally:
+            monkeypatch.delenv("PRTS_MCP_CONNECT_TIMEOUT", raising=False)
+            importlib.reload(config)
+
+
+class TestEnvFloatValidation:
+    @pytest.mark.parametrize("bad_value", ["nan", "inf", "0"])
+    def test_non_finite_or_non_positive_timeout_raises(self, bad_value, monkeypatch):
+        monkeypatch.setenv("PRTS_MCP_CONNECT_TIMEOUT", bad_value)
+        try:
+            with pytest.raises(ValueError):
+                importlib.reload(config)
+        finally:
+            monkeypatch.delenv("PRTS_MCP_CONNECT_TIMEOUT", raising=False)
+            importlib.reload(config)

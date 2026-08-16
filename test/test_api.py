@@ -157,6 +157,43 @@ class TestDataEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert "questions" in data
+        assert len(data["questions"]) == 4
+        categories = {q["category"] for q in data["questions"]}
+        assert categories == {"rag", "graph", "structured", "prts_mcp"}
+
+    def test_status_has_mcp_info(self):
+        resp = run_async(_request("GET", "/status"))
+        assert resp.status_code == 200
+        mcp = resp.json()["mcp"]
+        assert mcp["enabled"] is False  # conftest 关闭
+        assert mcp["connected"] is False
+
+    def test_status_mcp_connected_uses_registered_count(self, monkeypatch):
+        import backend.main as main_module
+
+        class FakeManager:
+            connected = True
+            last_error = ""
+            tools = list(range(24))
+
+        monkeypatch.setattr(main_module.config, "PRTS_MCP_ENABLED", True)
+        monkeypatch.setattr(main_module, "_mcp_manager", FakeManager())
+        monkeypatch.setattr(main_module, "_mcp_registered_count", 7)
+        resp = run_async(_request("GET", "/status"))
+        assert resp.json()["mcp"]["tool_count"] == 7
+
+    def test_status_mcp_failure_keeps_error(self, monkeypatch):
+        import backend.main as main_module
+
+        class FakeManager:
+            connected = False
+            last_error = "MCP 子进程启动失败: spawn boom"
+
+        monkeypatch.setattr(main_module.config, "PRTS_MCP_ENABLED", True)
+        monkeypatch.setattr(main_module, "_mcp_manager", FakeManager())
+        monkeypatch.setattr(main_module, "_mcp_registered_count", 0)
+        resp = run_async(_request("GET", "/status"))
+        assert resp.json()["mcp"]["error"] == "MCP 子进程启动失败: spawn boom"
 
 
 class TestAgentEndpoints:

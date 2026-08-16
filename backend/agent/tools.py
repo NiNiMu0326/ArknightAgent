@@ -110,15 +110,33 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: Dict[str, Callable] = {}
+        self._dynamic_schemas: List[Dict] = []
 
     def register(self, name: str, executor: Callable):
         """Register a tool executor function."""
         self._tools[name] = executor
         logger.info(f"Registered tool: {name}")
 
+    def register_schema(self, schema: Dict[str, Any]) -> None:
+        """Register an OpenAI Function Calling schema (idempotent by tool name).
+
+        The replacement list is built and assigned in a single step so readers
+        can never observe a half-registered state.
+        """
+        if not isinstance(schema, dict) or not isinstance(schema.get("function"), dict):
+            raise TypeError("register_schema 需要 {'type': 'function', 'function': {...}} 结构")
+        name = schema["function"].get("name", "")
+        if not isinstance(name, str) or not name:
+            raise ValueError("tool schema 的 function.name 必须是非空字符串")
+        self._dynamic_schemas = [
+            s for s in self._dynamic_schemas
+            if (s.get("function") or {}).get("name") != name
+        ] + [schema]
+        logger.info(f"Registered tool schema: {name}")
+
     def get_schemas(self) -> List[Dict]:
-        """Get all tool schemas for API calls."""
-        return TOOL_SCHEMAS
+        """Get all tool schemas for API calls (static + dynamically registered)."""
+        return [*TOOL_SCHEMAS, *self._dynamic_schemas]
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any], session_id: str = "") -> Any:
         """Execute a tool by name with the given arguments."""

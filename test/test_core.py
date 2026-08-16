@@ -24,6 +24,10 @@ from backend.agent.core import (
     _format_repeated_tool_reminder,
 )
 from backend.api.deepseek import ToolCall
+import asyncio
+from backend.agent.tool_result import ToolResultPayload
+from backend.agent.tools import ToolRegistry
+from backend.agent.core import execute_tool
 
 
 # ============================================================
@@ -286,3 +290,53 @@ class TestValidateUserInput:
         cleaned, detected = validate_user_input('<script>alert("xss")</script>')
         assert detected is True
         assert "script" not in cleaned.lower() or "已移除" in cleaned
+
+
+# ============================================================
+# execute_tool 的 ToolResultPayload 分流
+# ============================================================
+
+class TestExecuteToolResultPayload:
+    """MCP 等工具返回 ToolResultPayload 时，LLM 内容与展示内容分离。"""
+
+    def test_payload_fields_are_preserved(self):
+        registry = ToolRegistry()
+
+        async def fake_tool(args, session_id=""):
+            return ToolResultPayload(
+                llm_content={"summary": "no image"},
+                display={"summary": "no image", "images": ["img1"]},
+            )
+
+        registry.register("fake_mcp_tool", fake_tool)
+        tc = ToolCall(id="c1", name="fake_mcp_tool", arguments='{"q":"x"}')
+        result = asyncio.run(execute_tool(registry, tc))
+
+        assert isinstance(result, ToolResultPayload)
+        assert result.llm_content == {"summary": "no image"}
+        assert result.display == {"summary": "no image", "images": ["img1"]}
+
+    def test_payload_fields_are_sanitized(self):
+        registry = ToolRegistry()
+
+        async def fake_tool(args, session_id=""):
+            return ToolResultPayload(llm_content="\ud800", display={"key": "\ud800"})
+
+        registry.register("sanitize_tool", fake_tool)
+        tc = ToolCall(id="c3", name="sanitize_tool", arguments="{}")
+        result = asyncio.run(execute_tool(registry, tc))
+
+        assert result.llm_content == "\ufffd"
+        assert result.display == {"key": "\ufffd"}
+
+    def test_plain_result_stays_unchanged(self):
+        registry = ToolRegistry()
+
+        async def fake_tool(args, session_id=""):
+            return {"ok": True}
+
+        registry.register("plain_tool", fake_tool)
+        tc = ToolCall(id="c2", name="plain_tool", arguments="{}")
+        result = asyncio.run(execute_tool(registry, tc))
+
+        assert result == {"ok": True}

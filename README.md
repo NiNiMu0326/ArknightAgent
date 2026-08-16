@@ -1,6 +1,6 @@
 # 明日方舟 ARKNIGHTS Agent
 
-基于明日方舟数据集的 AI Agent 智能问答系统。Agent 通过 Function Calling 自主决定检索路径，支持知识库检索、知识图谱查询和网络搜索，可多工具并行调用、流式输出。
+基于明日方舟数据集的 AI Agent 智能问答系统。Agent 通过 Function Calling 自主决定检索路径，支持知识库检索、知识图谱查询、结构化数值查询、网络搜索，并通过通用 MCP Bridge 接入外部 PRTS MCP 工具（关卡/敌人/物品/立绘），可多工具并行调用、流式输出。
 
 ## 功能特性
 
@@ -9,6 +9,7 @@
 - **知识库检索**：FAISS 向量 + BM25 关键词混合检索 → RRF 融合 → Cross-Encoder 重排 → Parent Document 扩展
 - **知识图谱查询（GraphRAG）**：NetworkX 有向图，支持单实体邻居查询和双实体最短路径查找
 - **网络搜索**：Tavily API + DuckDuckGo 兜底，补充外部实时信息
+- **PRTS MCP 工具**：通用 MCP 客户端动态注册 7 个白名单工具，补充关卡出怪、敌人详情、材料获取、干员立绘等结构化能力，连接失败自动降级
 - **用户认证**：注册、登录、JWT 令牌认证，会话持久化到 SQLite
 - **SSE 流式输出**：实时显示 Agent 思考过程、工具执行状态、流式回答生成
 - **知识图谱可视化**：Cytoscape.js 交互式图谱，支持节点搜索、邻居展开、关系类型筛选
@@ -45,6 +46,9 @@ cp .env.example .env
 
 - `DEEPSEEK_API_KEY_2` - DeepSeek 官方模型
 - `TAVILY_API_KEY` - 网络搜索（不填则使用 DuckDuckGo 兜底）
+- `PRTS_MCP_ENABLED` - 是否启用 PRTS MCP 工具（默认 true）
+- `PRTS_MCP_COMMAND` - MCP 子进程命令（默认 `prts-mcp`）
+- `PRTS_MCP_CONNECT_TIMEOUT` / `PRTS_MCP_CALL_TIMEOUT` - 连接/调用超时（秒）
 
 ### 3. 前端
 
@@ -83,13 +87,16 @@ cd frontend && npm run dev
 
 Agent 自主循环：每轮 LLM 返回工具调用时并行执行，结果加入消息历史继续下一轮，直到模型认为信息充足或达到 15 轮上限。
 
-**三个工具：**
+**本地工具：**
 
 | 工具                          | 功能     | 内部流程                                    |
 | --------------------------- | ------ | --------------------------------------- |
 | `arknights_rag_search`      | 知识库检索  | FAISS + BM25 → RRF 融合 → 重排 → Parent Doc |
 | `arknights_graphrag_search` | 知识图谱查询 | 单实体邻居 / 双实体最短路径                         |
+| `arknights_structured_query` | 结构化数值查询 | 只读 SQLite：干员/敌人数值比较、排序、统计 |
 | `web_search`                | 网络搜索   | Tavily + DuckDuckGo                     |
+
+**PRTS MCP 白名单工具（7 个）：** `search_prts`、`get_stage_info`、`get_stage_enemies`、`get_enemy_info`、`list_items`、`get_item_info`、`operator_artwork`。MCP 不可用时 Agent 自动使用本地工具继续服务。
 
 **安全机制：** 最大 15 轮硬限制、循环检测（最近 3 轮相同 tool\_calls）、LLM 最大输出 token 限制
 
@@ -105,10 +112,13 @@ Agent 自主循环：每轮 LLM 返回工具调用时并行执行，结果加入
 │   ├── requirements.txt
 │   ├── agent/                   # Agent 核心
 │   │   ├── core.py              # Agent 主循环（SSE、并行 FC、循环检测）
-│   │   ├── tools.py             # 工具 Schema 定义 + ToolRegistry
-│   │   ├── tool_implementations.py  # 三个工具实现 + BM25/GraphBuilder 懒加载单例
+│   │   ├── tools.py             # 工具 Schema 定义 + ToolRegistry（支持动态注册）
+│   │   ├── mcp_client.py        # 通用 MCP stdio 客户端 + 白名单注册 + 结果拆分
+│   │   ├── tool_result.py       # 工具结果：LLM 上下文 / 前端展示分离
+│   │   ├── tool_implementations.py  # 本地工具实现 + BM25/GraphBuilder 懒加载单例
 │   │   ├── sessions.py          # 会话管理（TTL 3600s、LRU、线程安全）
 │   │   └── prompts.py           # 系统提示词 + 消息上下文构建
+│   ├── quick_questions.py       # 快速问题模板池（4 类能力导览）
 │   ├── api/                     # API 客户端封装
 │   │   ├── deepseek.py          # OpenAI 兼容客户端（Chat + FC + 流式）
 │   │   ├── llm_factory.py       # 多 Provider LLM 工厂
@@ -204,7 +214,7 @@ Agent 自主循环：每轮 LLM 返回工具调用时并行执行，结果加入
 | GET | `/operators`           | 干员列表   |
 | GET | `/characters`          | 角色列表   |
 | GET | `/stories`             | 故事列表   |
-| GET | `/quick-questions`     | 快捷问题   |
+| GET | `/quick-questions`     | 快捷问题（RAG/图谱/结构化/MCP 四类能力模板）   |
 
 ## 技术栈
 
@@ -217,6 +227,7 @@ Agent 自主循环：每轮 LLM 返回工具调用时并行执行，结果加入
 | 重排模型      | BAAI/bge-reranker-v2-m3（SiliconFlow）                    |
 | 中文分词      | jieba（BM25 索引构建）                                        |
 | 网络搜索      | Tavily + DuckDuckGo                                     |
+| MCP        | prts-mcp 2.7.0（官方 mcp SDK 2.0.0 stdio 客户端）            |
 | 知识图谱      | NetworkX DiGraph                                        |
 | 数据库       | SQLite（aiosqlite）                                       |
 | 前端        | Vue.js 3 + Vite + Pinia                                 |

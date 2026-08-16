@@ -245,6 +245,65 @@
                               </div>
                             </div>
                           </template>
+                          <template v-else-if="isMcpTool(call.name)">
+                            <div class="tool-detail-mcp">
+                              <div
+                                class="tool-detail-mcp-text"
+                                v-if="normalizeMcpDisplay(msg.results[call.id].data).text"
+                              >
+                                {{ normalizeMcpDisplay(msg.results[call.id].data).text }}
+                              </div>
+                              <div
+                                class="tool-detail-table-wrapper"
+                                v-if="normalizeMcpDisplay(msg.results[call.id].data).table"
+                              >
+                                <table class="tool-detail-table">
+                                  <thead>
+                                    <tr>
+                                      <th v-for="col in normalizeMcpDisplay(msg.results[call.id].data).table.columns" :key="col">{{ col }}</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr v-for="(row, ri) in normalizeMcpDisplay(msg.results[call.id].data).table.rows" :key="ri">
+                                      <td v-for="col in normalizeMcpDisplay(msg.results[call.id].data).table.columns" :key="col">{{ row[col] }}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                              <div
+                                class="tool-detail-mcp-json"
+                                v-else-if="normalizeMcpDisplay(msg.results[call.id].data).json"
+                              >
+                                <pre>{{ normalizeMcpDisplay(msg.results[call.id].data).json }}</pre>
+                              </div>
+                              <div
+                                class="tool-detail-mcp-images"
+                                v-if="normalizeMcpDisplay(msg.results[call.id].data).images.length"
+                              >
+                                <a
+                                  v-for="(img, i) in normalizeMcpDisplay(msg.results[call.id].data).images"
+                                  :key="i"
+                                  :href="img.data_url"
+                                  target="_blank"
+                                  rel="noopener"
+                                  class="tool-detail-image-link"
+                                >
+                                  <img
+                                    :src="img.data_url"
+                                    :alt="img.label || '立绘'"
+                                    class="tool-detail-image"
+                                    loading="lazy"
+                                  />
+                                </a>
+                              </div>
+                              <div
+                                class="tool-detail-error"
+                                v-if="msg.results[call.id].data?.error"
+                              >
+                                {{ msg.results[call.id].data.error }}
+                              </div>
+                            </div>
+                          </template>
                           <template v-else>
                             <pre>{{ formatToolResult(msg.results[call.id].data) }}</pre>
                           </template>
@@ -380,6 +439,13 @@ import { useSettingsStore } from '../stores/settings'
 import { useSourceDrawerStore } from '../stores/sourceDrawer'
 import { api, formatTime, escapeHtml } from '../api'
 import { renderMarkdown } from '../utils/markdown'
+import {
+  isMcpTool,
+  getToolIcon as resolveToolIcon,
+  getToolDisplayName as resolveToolDisplayName,
+  summarizeMcpToolArgs,
+  normalizeMcpDisplay,
+} from '../utils/toolMeta'
 import { useToastStore } from '../stores/toast'
 
 const sessionStore = useSessionStore()
@@ -1000,28 +1066,17 @@ function summarizeToolArgs(toolName, args) {
     case 'arknights_structured_query':
       return `SQL: "${(args.sql || '').substring(0, 60)}"`
     default:
+      if (isMcpTool(toolName)) return summarizeMcpToolArgs(toolName, args)
       return JSON.stringify(args).substring(0, 80)
   }
 }
 
 function getToolIcon(name) {
-  switch (name) {
-    case 'arknights_rag_search': return '📚'
-    case 'arknights_graphrag_search': return '🕸️'
-    case 'web_search': return '🌐'
-    case 'arknights_structured_query': return '📊'
-    default: return '🔧'
-  }
+  return resolveToolIcon(name)
 }
 
 function getToolDisplayName(name) {
-  switch (name) {
-    case 'arknights_rag_search': return '知识库检索'
-    case 'arknights_graphrag_search': return '图谱查询'
-    case 'web_search': return '网络搜索'
-    case 'arknights_structured_query': return '结构化查询'
-    default: return name
-  }
+  return resolveToolDisplayName(name)
 }
 
 async function loadQuickQuestionsData(refresh = false) {
@@ -1042,11 +1097,10 @@ async function loadQuickQuestionsData(refresh = false) {
     console.error('加载快速问题失败:', error);
     // fallback
     const fallbackActions = [
-      { label: '银灰技能', question: '银灰的技能是什么？', type: 'skill' },
-      { label: '陈/史尔特尔', question: '陈和史尔特尔的关系', type: 'relation' },
-      { label: '伊芙利特背景', question: '伊芙利特背景故事', type: 'background' },
-      { label: '靶向药物故事', question: '靶向药物故事内容', type: 'story' },
-      { label: '阿米娅别名', question: '阿米娅的其他名称有哪些', type: 'alias' }
+      { label: '银灰技能', question: '银灰的技能是什么？', type: 'skill', category: 'rag' },
+      { label: '陈/史尔特尔', question: '陈和史尔特尔的关系', type: 'relation', category: 'graph' },
+      { label: '高攻击近卫', question: '哪些六星近卫的精二满级攻击力大于800？', type: 'structured', category: 'structured' },
+      { label: '1-7出怪', question: '1-7关卡的出怪顺序是什么？', type: 'stage', category: 'prts_mcp' }
     ];
     quickQuestionsStore.setQuickActions(fallbackActions);
   } finally {
@@ -1408,6 +1462,13 @@ function applyQuickAction(question) {
 .tool-detail-table td { padding: 3px 8px; border-bottom: 1px solid var(--border-color); color: var(--text-secondary); white-space: nowrap; }
 .tool-detail-table tr:hover td { background: var(--bg-dark); }
 .tool-detail-row-count { font-size: 0.7rem; color: var(--text-dim); margin-top: var(--spacing-xs); text-align: right; }
+
+/* PRTS-MCP results */
+.tool-detail-mcp { display: flex; flex-direction: column; gap: var(--spacing-sm); }
+.tool-detail-mcp-text { font-size: 0.72rem; color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.tool-detail-mcp-images { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); }
+.tool-detail-image-link { display: block; }
+.tool-detail-image { max-height: 240px; max-width: 160px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); object-fit: contain; background: var(--bg-deep); }
 
 /* 用户消息行内编辑 */
 .chat-edit-box { display: flex; flex-direction: column; gap: var(--spacing-sm); }

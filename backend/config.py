@@ -1,6 +1,7 @@
 """
 Backend LangChain Configuration
 """
+import math
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -14,6 +15,36 @@ CHUNKS_DIR = BASE_DIR / "chunks"
 GRAPH_DIR = CHUNKS_DIR / "graphrag"
 ENTITY_RELATIONS_FILE = GRAPH_DIR / "entity_relations.json"
 DATA_DIR = BASE_DIR / "data"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable (1/true/yes/on)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a positive finite float environment variable."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"环境变量 {name}={raw!r} 不是有效数字") from None
+    if not math.isfinite(value):
+        raise ValueError(f"环境变量 {name}={raw!r} 必须是有限数字")
+    if value <= 0:
+        raise ValueError(f"环境变量 {name}={raw!r} 必须大于 0")
+    return value
+
+# PRTS MCP（外部 MCP 工具接入，可选依赖）
+PRTS_MCP_ENABLED = _env_bool("PRTS_MCP_ENABLED", True)
+PRTS_MCP_COMMAND = os.environ.get("PRTS_MCP_COMMAND", "prts-mcp")
+PRTS_MCP_CONNECT_TIMEOUT = _env_float("PRTS_MCP_CONNECT_TIMEOUT", 10.0)
+PRTS_MCP_CALL_TIMEOUT = _env_float("PRTS_MCP_CALL_TIMEOUT", 60.0)
 
 # API Keys
 SILICONFLOW_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")

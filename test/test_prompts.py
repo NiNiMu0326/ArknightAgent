@@ -35,6 +35,12 @@ class TestSystemPrompt:
         assert "semantic" in SYSTEM_PROMPT
         assert "balanced" in SYSTEM_PROMPT
 
+    def test_prompt_contains_mcp_tool_names(self):
+        assert "get_stage_enemies" in SYSTEM_PROMPT
+        assert "get_item_info" in SYSTEM_PROMPT
+        assert "operator_artwork" in SYSTEM_PROMPT
+        assert "search_prts" in SYSTEM_PROMPT
+
     def test_prompt_contains_safety_constraints(self):
         """Should contain safety rules."""
         assert "不要编造" in SYSTEM_PROMPT

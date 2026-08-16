@@ -52,6 +52,16 @@ jobs:
             cd /srv/projects/arknights-rag
             git fetch origin master
             git reset --hard origin/master
+            export PATH="$HOME/.local/bin:$PATH"
+            if ! command -v uv >/dev/null 2>&1; then
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              export PATH="$HOME/.local/bin:$PATH"
+            fi
+            if [ ! -x .venv/bin/python ]; then
+              uv python install 3.11
+              uv venv --python 3.11 .venv
+            fi
+            uv pip install --python .venv/bin/python -r backend/requirements.txt
             cd frontend
             npm install
             npm run build

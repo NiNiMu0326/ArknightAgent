@@ -59,12 +59,12 @@ describe('useSettingsStore', () => {
       expect(store.currentModel).toBe('m1')
     })
 
-    it('throws on corrupted localStorage (no try/catch in loadSettings)', () => {
+    it('falls back to defaults on corrupted localStorage', () => {
       storeData['arknights_rag_settings'] = 'not-valid-json'
-      // loadSettings() calls JSON.parse without try/catch on raw stored data
-      expect(() => {
-        useSettingsStore()
-      }).toThrow(SyntaxError)
+      // loadSettings() catches JSON.parse errors and falls back to defaults
+      const store = useSettingsStore()
+      expect(store.theme).toBe('dark')
+      expect(store.currentModel).toBe('')
     })
   })
 

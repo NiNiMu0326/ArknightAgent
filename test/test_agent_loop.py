@@ -18,6 +18,7 @@ from backend.agent import core
 from backend.agent.core import agent_loop
 from backend.agent.sessions import SessionManager
 from backend.agent.tools import ToolRegistry
+from backend.agent.tool_result import ToolResultPayload
 from backend.api.deepseek import (
     ToolCall,
     STREAM_EVENT_CONTENT_DELTA,
@@ -271,6 +272,46 @@ class TestToolCallFlow:
         tool_ids = asyncio.run(get_tool_order())
         assert tool_ids == ["c1", "c2"]
         assert [e for e in events if e["type"] == "answer_done"]
+
+
+def tool_result_payload_round(call_id="c1"):
+    return [
+        {"type": STREAM_EVENT_TOOL_CALLS,
+         "tool_calls": [ToolCall(id=call_id, name="fake_mcp_tool", arguments=json.dumps({}))],
+         "content": "", "reasoning_content": ""},
+    ]
+
+
+class TestToolResultPayloadFlow:
+    """ToolResultPayload: LLM history gets llm_content, SSE gets display."""
+
+    def test_llm_history_and_sse_are_split(self):
+        registry = ToolRegistry()
+
+        async def fake_mcp_tool(args, session_id=""):
+            return ToolResultPayload(
+                llm_content={"summary": "llm-only"},
+                display={"summary": "display", "images": ["img1"]},
+            )
+
+        registry.register("fake_mcp_tool", fake_mcp_tool)
+        events, sm, sid, _ = run_loop(
+            [tool_result_payload_round(), direct_answer_round("答案")],
+            registry=registry,
+        )
+
+        async def get_tool_msgs():
+            session = await sm.get_session(sid)
+            return [m for m in session.messages if m["role"] == "tool"]
+
+        tool_msgs = asyncio.run(get_tool_msgs())
+        assert len(tool_msgs) == 1
+        saved = json.loads(tool_msgs[0]["content"])
+        assert saved == {"summary": "llm-only"}
+        assert "img1" not in tool_msgs[0]["content"]
+
+        result_event = [e for e in events if e["type"] == "tool_call_result"][0]
+        assert result_event["result"] == {"summary": "display", "images": ["img1"]}
 
 
 # ============================================================

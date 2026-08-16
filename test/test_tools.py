@@ -90,7 +90,8 @@ class TestToolRegistry:
     def test_register_and_get_schemas(self):
         registry = ToolRegistry()
         schemas = registry.get_schemas()
-        assert schemas is TOOL_SCHEMAS  # same object reference
+        assert schemas is not TOOL_SCHEMAS  # 返回新列表，不暴露静态列表引用
+        assert schemas == TOOL_SCHEMAS  # 空 registry 时无动态 schema
 
     def test_register_and_execute(self):
         registry = ToolRegistry()
@@ -170,6 +171,48 @@ class TestToolRegistry:
 
         import asyncio
         asyncio.run(_test())
+
+    def test_register_schema_and_get_schemas(self):
+        registry = ToolRegistry()
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "mcp_test_tool",
+                "description": "test",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        registry.register_schema(schema)
+        schemas = registry.get_schemas()
+        names = [s["function"]["name"] for s in schemas]
+        assert names[-1] == "mcp_test_tool"
+        assert len(schemas) == len(TOOL_SCHEMAS) + 1
+
+    def test_register_schema_same_name_replaces(self):
+        registry = ToolRegistry()
+        first = {
+            "type": "function",
+            "function": {"name": "dup_tool", "description": "old", "parameters": {}},
+        }
+        second = {
+            "type": "function",
+            "function": {"name": "dup_tool", "description": "new", "parameters": {}},
+        }
+        registry.register_schema(first)
+        registry.register_schema(second)
+        schemas = registry.get_schemas()
+        dup = [s for s in schemas if s["function"]["name"] == "dup_tool"]
+        assert len(dup) == 1
+        assert dup[0]["function"]["description"] == "new"
+
+    def test_register_schema_rejects_malformed_schema(self):
+        registry = ToolRegistry()
+        with pytest.raises(TypeError):
+            registry.register_schema(None)
+        with pytest.raises(TypeError):
+            registry.register_schema({"function": "not-a-dict"})
+        with pytest.raises(ValueError):
+            registry.register_schema({"function": {"name": ""}})
 
 
 # ============================================================
