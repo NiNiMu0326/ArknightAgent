@@ -72,5 +72,27 @@ async def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_traces_session_id ON traces(session_id);
             CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at);
+
+            CREATE TABLE IF NOT EXISTS agent_session_store (
+                session_id TEXT PRIMARY KEY,
+                messages TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                summary_up_to_turn INTEGER DEFAULT 0,
+                last_active REAL,
+                created_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_context_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                turn_no INTEGER,
+                created_at REAL,
+                estimated_tokens INTEGER,
+                compressed INTEGER,
+                context_messages TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_context_logs_session_id ON agent_context_logs(session_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_context_logs_created_at ON agent_context_logs(created_at);
         """)
         await db.commit()

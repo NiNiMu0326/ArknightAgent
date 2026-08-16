@@ -140,6 +140,56 @@ class DeepSeekClient:
         self.model = model or config.DEEPSEEK_LLM_MODEL
         self.disable_thinking = False  # Set True for models where deep thinking is overkill
 
+    async def chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str = None,
+        temperature: float = 0.3,
+        **kwargs,
+    ) -> str:
+        """Non-streaming chat completion.
+
+        Used for small internal calls such as rolling-summary updates.
+        Returns the assistant message content as a string.
+        """
+        import httpx
+
+        model = model or self.model
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if self.disable_thinking:
+            payload["thinking"] = {"type": "disabled"}
+        payload.update(kwargs)
+
+        logger.info(f"[API CHAT] POST {url} model={model} messages={len(messages)} stream=false")
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0), proxy=None, trust_env=False) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code != 200:
+                body = resp.text
+                try:
+                    err_data = json.loads(body)
+                    err_msg = err_data.get("error", {}).get("message", body[:300])
+                except Exception:
+                    err_msg = body[:300]
+                logger.error(f"[API CHAT ERROR] {resp.status_code}: {err_msg}")
+                raise Exception(f"{resp.status_code} Error: {err_msg}")
+
+            data = resp.json()
+            choices = data.get("choices") or []
+            if not choices:
+                raise Exception("Chat completion response has no choices")
+            return (choices[0].get("message") or {}).get("content") or ""
+
     async def chat_with_tools_stream(
         self,
         messages: List[Dict[str, Any]],

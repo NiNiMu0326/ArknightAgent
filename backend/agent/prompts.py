@@ -84,10 +84,24 @@ SYSTEM_PROMPT = """# \u89d2\u8272
 
 def build_messages(session) -> list:
     """Build the messages list for the LLM API call.
-    
-    Prepends system prompt and formats session history.
+
+    Prepends system prompt and delegates history selection to the context
+    engine.  Compressed sessions use first-turn + rolling summary + recent
+    turns; uncompressed sessions preserve the previous last-20 behavior with
+    orphaned tool pairs cleaned.
     """
+    from backend.agent.context_engine import (
+        should_compress,
+        can_build_compressed,
+        build_compressed_messages,
+    )
+
     system_content = SYSTEM_PROMPT
+
+    if should_compress(session):
+        if can_build_compressed(session):
+            return build_compressed_messages(session, system_prompt=system_content)
+        # Safe fallback: summary is missing/failed, use uncompressed context.
 
     messages = [{"role": "system", "content": system_content}]
     messages.extend(session.get_context_messages(max_messages=20))

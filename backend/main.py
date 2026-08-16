@@ -83,6 +83,7 @@ from backend.quick_questions import (
 # ============== Lifespan ==============
 
 TRACE_RETENTION_DAYS = 30  # 本地 trace 保留时长，超期自动清理
+AGENT_SESSION_RETENTION_DAYS = 30  # 持久化 agent 会话保留时长（过期后允许恢复的窗口）
 
 _mcp_manager: Optional[Any] = None
 _mcp_registered_count = 0
@@ -171,10 +172,38 @@ async def _cleanup_old_traces():
         logger.warning(f"[TRACE] Retention cleanup failed: {e}")
 
 
+async def _cleanup_old_agent_sessions():
+    """删除超过保留期的持久化 agent 会话，防止 agent_session_store 无限膨胀。
+
+    内存 TTL 只有 1 小时；持久化行保留 30 天，供用户关闭/重开页面或服务重启后
+    恢复完整对话历史。超过 30 天未活跃的会话视为废弃，清掉即可。
+    """
+    try:
+        db = await get_db()
+        try:
+            cutoff = time.time() - AGENT_SESSION_RETENTION_DAYS * 24 * 3600
+            cursor = await db.execute(
+                "DELETE FROM agent_session_store WHERE last_active < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+        finally:
+            await db.close()
+        if deleted:
+            logger.info(
+                f"[SESSION] Retention cleanup: deleted {deleted} persisted sessions "
+                f"older than {AGENT_SESSION_RETENTION_DAYS} days"
+            )
+    except Exception as e:
+        logger.warning(f"[SESSION] Persisted session retention cleanup failed: {e}")
+
+
 async def _trace_retention_loop():
     """启动时清理一次，之后每 24 小时清理一次。"""
     while True:
         await _cleanup_old_traces()
+        await _cleanup_old_agent_sessions()
         await asyncio.sleep(24 * 3600)
 
 
@@ -782,9 +811,14 @@ async def agent_chat(req: AgentChatRequest):
     actual_session_id = req.session_id
 
     if session is None:
-        # Session expired or invalid — auto-create a new one
-        actual_session_id = await _session_manager.create_session()
-        logger.warning(f"Session '{req.session_id}' not found/expired, auto-created new session: {actual_session_id}")
+        # First try SQLite restore before auto-creating a brand-new session.
+        restored = await _session_manager.restore_session(req.session_id)
+        if restored is None:
+            # Session expired or invalid — auto-create a new one
+            actual_session_id = await _session_manager.create_session()
+            logger.warning(f"Session '{req.session_id}' not found/expired, auto-created new session: {actual_session_id}")
+        else:
+            logger.info(f"Session '{req.session_id}' restored from SQLite, reusing same session")
     
     model_id = req.model or DEFAULT_MODEL
     logger.info(f"[AGENT CHAT] session={actual_session_id} model={model_id} message={req.message[:100]}")
@@ -815,6 +849,8 @@ async def get_session_messages(session_id: str, user: dict = Depends(get_current
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
     session = await _session_manager.get_session(session_id)
+    if session is None:
+        session = await _session_manager.restore_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found or expired")
     return {"messages": session.messages}

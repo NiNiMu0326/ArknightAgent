@@ -13,6 +13,13 @@ from typing import AsyncGenerator, Dict, List, Any, Tuple
 from backend.agent.sessions import SessionManager
 from backend.agent.tool_result import ToolResultPayload
 from backend.agent.prompts import build_messages
+from backend.agent.context_engine import (
+    can_build_compressed,
+    estimate_messages_tokens,
+    log_context_snapshot,
+    should_compress,
+    update_rolling_summary,
+)
 from backend.agent.tools import ToolRegistry, get_tool_registry
 from backend.api.deepseek import ToolCall, STREAM_EVENT_THINKING_DELTA, STREAM_EVENT_CONTENT_DELTA, STREAM_EVENT_TOOL_CALLS, STREAM_EVENT_DONE
 from backend.api.llm_factory import get_llm_client, get_model_info, DEFAULT_MODEL
@@ -338,6 +345,7 @@ async def _agent_loop_unlocked(
     session_manager: SessionManager,
     model_id: str = None,
     max_rounds: int = 15,
+    session_id_holder: list = None,
 ) -> AsyncGenerator[str, None]:
     """Agent main loop with parallel Function Calling support.
     
@@ -361,6 +369,8 @@ async def _agent_loop_unlocked(
         new_session_id = await session_manager.create_session()
         logger.warning(f"[SESSION] Session '{session_id}' expired, created new: {new_session_id}")
         session_id = new_session_id
+        if session_id_holder is not None:
+            session_id_holder[0] = session_id
         session = await session_manager.get_session(session_id)
         # Notify frontend so it can re-map its backend session ID
         yield _sse_event("session_renewed", session_id=session_id)
@@ -373,11 +383,41 @@ async def _agent_loop_unlocked(
         logger.warning(f"[INJECTION] Potential prompt injection detected in session {session_id}")
         session.add_message("system", SECURITY_NOTICE)
 
+    # Resolve model/client before building messages so the rolling summary can
+    # use the same already-selected model client.
+    model_id = model_id or DEFAULT_MODEL
+    model_info = get_model_info(model_id)
+    client = get_llm_client(model_id)
+    registry = get_tool_registry()
+    tool_schemas = registry.get_schemas()
+
+    logger.info(f"[MODEL] Using model: {model_id} ({model_info['display_name']})")
+
+    # Incremental rolling summary (only acts when compression is triggered).
+    try:
+        await update_rolling_summary(session, client, model_id)
+    except Exception as exc:
+        logger.warning(f"[CONTEXT] Unexpected rolling summary failure: {exc}")
+
     messages = build_messages(session)
+    turn_no = sum(1 for m in session.messages if m.get("role") == "user")
+    estimated_tokens = estimate_messages_tokens(messages)
+    compressed = bool(should_compress(session) and can_build_compressed(session))
+    logger.info(
+        "[CONTEXT] session=%s turn_no=%d estimated_tokens=%d compressed=%s summary_len=%d",
+        session_id, turn_no, estimated_tokens, compressed, len(session.summary),
+    )
+    await log_context_snapshot(
+        session_id=session_id,
+        turn_no=turn_no,
+        messages=messages,
+        estimated_tokens=estimated_tokens,
+        compressed=compressed,
+    )
     logger.info(f"[SESSION] session={session_id} user_message={user_message[:100]}")
 
     # Initialize LangFuse trace if enabled
-    trace = AgentTrace(session_id, user_message, model_id or DEFAULT_MODEL)
+    trace = AgentTrace(session_id, user_message, model_id)
 
     loop_start = time.time()
 
@@ -387,14 +427,6 @@ async def _agent_loop_unlocked(
     collected_sources = {}  # key (chunk_id or url) -> source dict
     # Track tool call counts for escalating repeated-call reminders
     tool_call_counts: Dict[str, int] = {}
-
-    model_id = model_id or DEFAULT_MODEL
-    model_info = get_model_info(model_id)
-    client = get_llm_client(model_id)
-    registry = get_tool_registry()
-    tool_schemas = registry.get_schemas()
-
-    logger.info(f"[MODEL] Using model: {model_id} ({model_info['display_name']})")
 
     for round_num in range(1, max_rounds + 1):
         # Reset streaming state for each round
@@ -647,6 +679,26 @@ async def _agent_loop_unlocked(
     yield format_error("我无法在有限的步骤内完成回答，请尝试更具体的问题。")
 
 
+async def _safe_persist_session(session_manager: SessionManager, session) -> None:
+    """Persist a session after an agent request without losing cancellation.
+
+    Uses asyncio.shield so a cancellation while persisting does not kill the
+    write mid-commit.  If the outer task is cancelled anyway, a detached task
+    is scheduled to finish the write, then the cancellation is re-raised.
+    """
+    try:
+        await asyncio.shield(session_manager.persist_session(session))
+    except asyncio.CancelledError:
+        try:
+            asyncio.create_task(session_manager.persist_session(session))
+            logger.debug("[SESSION] Persistence continued as detached task after cancellation")
+        except Exception as exc:
+            logger.warning(f"[SESSION] Could not schedule detached persistence: {exc}")
+        raise
+    except Exception as exc:
+        logger.warning(f"[SESSION] Failed to persist session after request: {exc}")
+
+
 async def agent_loop(
     session_id: str,
     user_message: str,
@@ -661,6 +713,7 @@ async def agent_loop(
     """
     lock = await session_manager.get_session_lock(session_id)
     await lock.acquire()
+    final_session_id = [session_id]
     try:
         async for event in _agent_loop_unlocked(
             session_id=session_id,
@@ -668,7 +721,15 @@ async def agent_loop(
             session_manager=session_manager,
             model_id=model_id,
             max_rounds=max_rounds,
+            session_id_holder=final_session_id,
         ):
             yield event
     finally:
-        lock.release()
+        try:
+            session = await session_manager.get_session(final_session_id[0])
+            if session is not None:
+                await _safe_persist_session(session_manager, session)
+        except Exception as exc:
+            logger.warning(f"[SESSION] Persistence finalization failed: {exc}")
+        finally:
+            lock.release()
