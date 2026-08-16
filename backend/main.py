@@ -94,14 +94,22 @@ async def _start_prts_mcp():
     # 延迟导入：mcp 依赖 Python>=3.10，未安装时也要允许 PRTS_MCP_ENABLED=false 启动
     from backend.agent.mcp_client import McpClientManager, register_mcp_tools
 
+    mcp_env = {
+        "PRTS_OUTPUT_CHANNEL": "both",
+        "LOCAL_IMAGE": "false",
+        "PRTS_IMAGE_CACHE": "true",
+        "IMAGES_ENABLED": "true",
+    }
+    # stdio 子进程默认只继承白名单环境变量；显式透传 GitHub 访问相关配置
+    # （GITHUB_MIRRORS 用于 GitHub Release 数据同步走镜像，GITHUB_TOKEN 用于提高限流额度）
+    for key in ("GITHUB_MIRRORS", "GITHUB_TOKEN"):
+        value = os.environ.get(key)
+        if value:
+            mcp_env[key] = value
+
     manager = McpClientManager(
         command=config.PRTS_MCP_COMMAND,
-        env={
-            "PRTS_OUTPUT_CHANNEL": "both",
-            "LOCAL_IMAGE": "false",
-            "PRTS_IMAGE_CACHE": "true",
-            "IMAGES_ENABLED": "true",
-        },
+        env=mcp_env,
         connect_timeout=config.PRTS_MCP_CONNECT_TIMEOUT,
         call_timeout=config.PRTS_MCP_CALL_TIMEOUT,
     )
