@@ -18,7 +18,7 @@
               :key="`${msg.role || 'pending'}-${idx}`"
               class="chat-message"
               :class="msg.role"
-              v-memo="[msg, expandedTools.length, expandedThinking.length, sessionStore.currentSession?.messages?.length, isLoading, editingIdx]"
+              v-memo="[msg, expandedProcesses.length, expandedTools.length, expandedThinking.length, sessionStore.currentSession?.messages?.length, isLoading, editingIdx]"
             >
               <!-- User message -->
               <template v-if="msg.role === 'user'">
@@ -74,6 +74,22 @@
                 <div class="chat-bubble">
                   <div class="chat-role">Arknights RAG</div>
                   <div class="chat-text markdown-body" v-html="renderMessageWithSources(msg.content, msg.sources)"></div>
+                  <div
+                    class="answer-image-gallery"
+                    v-if="getAnswerImages(sessionStore.currentSession?.messages, idx).length"
+                  >
+                    <button
+                      v-for="(img, imgIdx) in getAnswerImages(sessionStore.currentSession?.messages, idx)"
+                      :key="imgIdx"
+                      type="button"
+                      class="answer-image-item"
+                      @click.stop="openImageZoom(img)"
+                      :title="`点击放大：${img.label || '图片'}`"
+                    >
+                      <img :src="img.data_url" :alt="img.label || '立绘'" loading="lazy" />
+                      <span class="answer-image-label">{{ img.label || '立绘' }}</span>
+                    </button>
+                  </div>
                 </div>
                 <div class="chat-msg-footer">
                   <button
@@ -91,24 +107,37 @@
                 </div>
               </template>
 
-              <!-- Thinking display (independent, before tool calls and answer) -->
+              <!-- Thinking display (inside collapsed agent-process card) -->
               <template v-else-if="msg.role === 'thinking'">
-                <div class="thinking-card" @click="handleThinkingClick(idx)">
+                <div v-if="isProcessStart(idx)" class="process-card" :class="{ 'is-expanded': isProcessExpanded(idx) }">
+                  <div class="process-card-header" @click="toggleProcessCard(idx)">
+                    <span class="process-card-icon">⚙️</span>
+                    <span class="process-card-title">{{ getProcessTitle(idx) }}</span>
+                    <span class="process-card-time" v-if="getProcessElapsed(idx) > 0">{{ formatTimeMs(getProcessElapsed(idx)) }}</span>
+                    <span class="process-card-toggle">{{ isProcessExpanded(idx) ? '收起' : '展开' }}</span>
+                  </div>
+                </div>
+                <div v-if="isProcessExpanded(idx)" class="thinking-card process-detail">
                   <div class="thinking-card-header">
                     <span class="thinking-card-round">Round {{ msg.round }}</span>
                     <span class="thinking-card-label">思考过程</span>
                     <span class="thinking-card-time" v-if="msg.time_ms">{{ formatTimeMs(msg.time_ms) }}</span>
                   </div>
-                  <div class="thinking-card-preview" v-if="!expandedThinking.includes(idx)">
-                    {{ msg.content.length > 60 ? msg.content.substring(0, 60) + '...' : msg.content }}
-                  </div>
-                  <div class="thinking-card-content" v-if="expandedThinking.includes(idx)">{{ msg.content }}</div>
+                  <div class="thinking-card-content">{{ msg.content }}</div>
                 </div>
               </template>
 
-              <!-- Tool call display -->
+              <!-- Tool call display (inside collapsed agent-process card) -->
               <template v-else-if="msg.role === 'tool_call'">
-                <div class="tool-call-card">
+                <div v-if="isProcessStart(idx)" class="process-card" :class="{ 'is-expanded': isProcessExpanded(idx) }">
+                  <div class="process-card-header" @click="toggleProcessCard(idx)">
+                    <span class="process-card-icon">⚙️</span>
+                    <span class="process-card-title">{{ getProcessTitle(idx) }}</span>
+                    <span class="process-card-time" v-if="getProcessElapsed(idx) > 0">{{ formatTimeMs(getProcessElapsed(idx)) }}</span>
+                    <span class="process-card-toggle">{{ isProcessExpanded(idx) ? '收起' : '展开' }}</span>
+                  </div>
+                </div>
+                <div v-if="isProcessExpanded(idx)" class="tool-call-card process-detail">
                   <div class="tool-call-header">
                     <span class="tool-call-round">Round {{ msg.round }}</span>
                     <span class="tool-call-count">{{ msg.calls?.length || 0 }} tools</span>
@@ -119,8 +148,7 @@
                       :key="call.id"
                       :ref="el => { if (el) { toolItemRefs[call.id] = el } else { delete toolItemRefs[call.id] } }"
                       class="tool-call-item"
-                      :class="{ 'has-result': msg.results?.[call.id], 'is-expanded': expandedTools.includes(call.id), 'is-interrupted': msg.results?.[call.id]?.interrupted }"
-                      @click="handleToolItemClick(call.id, $event)"
+                      :class="{ 'has-result': msg.results?.[call.id], 'is-expanded': true, 'is-interrupted': msg.results?.[call.id]?.interrupted }"
                     >
                       <div class="tool-call-name-row">
                         <div class="tool-call-name">
@@ -132,26 +160,10 @@
                           <span class="tool-result-time" v-if="msg.results?.[call.id] && !msg.results[call.id].interrupted">{{ Math.round(msg.results[call.id].time_ms) }}ms</span>
                         </div>
                       </div>
-                      <div class="tool-result-summary" :class="{ 'is-interrupted-text': msg.results?.[call.id]?.interrupted }" v-if="msg.results?.[call.id] && !expandedTools.includes(call.id)">
-                        {{ msg.results[call.id].summary }}
-                      </div>
-                      <div
-                        class="tool-result-images-inline"
-                        v-if="!expandedTools.includes(call.id) && msg.results?.[call.id] && isMcpTool(call.name) && normalizeMcpDisplay(msg.results[call.id].data).images.length"
-                      >
-                        <img
-                          v-for="(img, i) in normalizeMcpDisplay(msg.results[call.id].data).images"
-                          :key="i"
-                          :src="img.data_url"
-                          :alt="img.label || '立绘'"
-                          class="tool-detail-image"
-                          loading="lazy"
-                        />
-                      </div>
                       <div class="tool-call-pending" v-if="!msg.results?.[call.id]">
                         <span class="pending-dot"></span> 执行中 {{ formatElapsed(nowTs - msg.timestamp) }}
                       </div>
-                      <div class="tool-result-detail" v-if="msg.results?.[call.id] && expandedTools.includes(call.id)">
+                      <div class="tool-result-detail" v-if="msg.results?.[call.id]">
                         <div class="tool-detail-summary">{{ msg.results[call.id].summary }}</div>
                         <div class="tool-detail-content" v-if="msg.results[call.id].data">
                           <template v-if="call.name === 'arknights_rag_search'">
@@ -424,6 +436,15 @@
         </div>
       </div>
     </div>
+
+    <!-- 图片放大灯箱 -->
+    <div v-if="zoomImage" class="image-lightbox" @click.self="closeImageZoom">
+      <div class="image-lightbox-box">
+        <img :src="zoomImage.data_url" :alt="zoomImage.label || '立绘'" class="image-lightbox-img" />
+        <div class="image-lightbox-label" v-if="zoomImage.label">{{ zoomImage.label }}</div>
+        <button type="button" class="image-lightbox-close" @click="closeImageZoom" aria-label="关闭预览">×</button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -455,6 +476,8 @@ const isLoading = ref(false)
 const currentAnswer = ref('')
 const expandedTools = ref([])
 const expandedThinking = ref([])
+const expandedProcesses = ref([])
+const zoomImage = ref(null)
 
 const toolItemRefs = reactive({})
 const currentRound = ref(0)
@@ -612,10 +635,105 @@ function formatTimeMs(ms) {
   return `${Math.round(ms)}ms`
 }
 
+// ===== Agent 过程折叠卡片（思考 + 工具调用整体折叠为一个「工具调用 N 轮」卡片） =====
+function isProcessRole(role) {
+  return role === 'thinking' || role === 'tool_call'
+}
+
+function getProcessStartIndex(idx) {
+  const messages = sessionStore.currentSession?.messages || []
+  let start = idx
+  while (start > 0 && isProcessRole(messages[start - 1]?.role)) start--
+  return start
+}
+
+function getProcessMessages(idx) {
+  const messages = sessionStore.currentSession?.messages || []
+  const start = getProcessStartIndex(idx)
+  const group = []
+  for (let i = start; i < messages.length; i++) {
+    if (!isProcessRole(messages[i]?.role)) break
+    group.push(messages[i])
+  }
+  return group
+}
+
+function isProcessStart(idx) {
+  const messages = sessionStore.currentSession?.messages || []
+  return idx === 0 || !isProcessRole(messages[idx - 1]?.role)
+}
+
+function isProcessExpanded(idx) {
+  return expandedProcesses.value.includes(`proc-${getProcessStartIndex(idx)}`)
+}
+
+function getProcessTitle(idx) {
+  const group = getProcessMessages(idx)
+  const toolRounds = group.filter(m => m.role === 'tool_call').length
+  return toolRounds > 0 ? `工具调用 · ${toolRounds} 轮` : '思考过程'
+}
+
+function getProcessElapsed(idx) {
+  const group = getProcessMessages(idx)
+  let total = 0
+  for (const m of group) {
+    if (m.role === 'thinking') {
+      total += m.time_ms || 0
+    } else if (m.role === 'tool_call' && m.results) {
+      for (const call of (m.calls || [])) {
+        total += m.results[call.id]?.time_ms || 0
+      }
+    }
+  }
+  return total
+}
+
+function toggleProcessCard(idx) {
+  const id = `proc-${getProcessStartIndex(idx)}`
+  const i = expandedProcesses.value.indexOf(id)
+  if (i > -1) expandedProcesses.value.splice(i, 1)
+  else expandedProcesses.value.push(id)
+}
+
 function formatToolResult(data) {
   if (data === null || data === undefined) return '无数据'
   if (typeof data === 'object') return JSON.stringify(data, null, 2)
   return String(data)
+}
+
+const MAX_ANSWER_IMAGES = 8
+
+// 收集回答前这一轮工具调用返回的图片（立绘），按调用顺序展示在最终回答里
+function getAnswerImages(messages, assistantIdx) {
+  if (!Array.isArray(messages) || assistantIdx == null) return []
+  const images = []
+  const seen = new Set()
+  for (let i = assistantIdx - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (!msg) continue
+    if (msg.role === 'user' || msg.role === 'assistant') break
+    if (msg.role !== 'tool_call') continue
+    for (const call of (msg.calls || [])) {
+      const data = msg.results?.[call.id]?.data
+      const list = Array.isArray(data?.images) ? data.images : []
+      for (const img of list) {
+        if (img?.data_url && !seen.has(img.data_url)) {
+          seen.add(img.data_url)
+          images.unshift(img)
+          if (images.length >= MAX_ANSWER_IMAGES) return images
+        }
+      }
+    }
+  }
+  return images
+}
+
+function openImageZoom(img) {
+  zoomImage.value = img || null
+}
+
+function closeImageZoom() {
+  zoomImage.value = null
 }
 
 function renderMessageWithSources(content, messageSources) {
@@ -809,6 +927,7 @@ async function startAgentStream(content) {
   currentAnswerSources.value = null
   expandedTools.value = []
   expandedThinking.value = []
+  expandedProcesses.value = []
   currentThinking.value = ''
   currentThinkingTimeMs.value = 0
   thinkingStartTime.value = 0
@@ -918,12 +1037,6 @@ async function startAgentStream(content) {
           tool_name: event.tool_name || '',
           result: event.result || null,
         }, streamSessionId)
-        // 立绘等带图片的 MCP 结果自动展开，让图片立即可见
-        const images = event.result?.images
-        if (Array.isArray(images) && images.length > 0 &&
-            !expandedTools.value.includes(event.tool_call_id)) {
-          expandedTools.value.push(event.tool_call_id)
-        }
       },
 
       onAnswerDelta(event) {
@@ -988,6 +1101,10 @@ async function startAgentStream(content) {
           currentThinking.value = ''
           currentThinkingTimeMs.value = 0
           thinkingStartTime.value = 0
+          // 回答完成后：思考过程与工具调用整体折叠为一个「工具调用 N 轮」卡片
+          expandedThinking.value = []
+          expandedTools.value = []
+          expandedProcesses.value = []
           // Scroll to bottom when answer is complete
           nextTick(() => scrollToBottom())
         }
@@ -1041,6 +1158,10 @@ async function startAgentStream(content) {
   abortController.value = null
   isLoading.value = false
   stopElapsedTicker()
+  // 无论正常完成还是中断/出错，思考与工具面板默认折叠
+  expandedThinking.value = []
+  expandedTools.value = []
+  expandedProcesses.value = []
   nextTick(() => scrollToBottom())
 
   // Only process queue if still on the original session
@@ -1357,7 +1478,31 @@ function applyQuickAction(question) {
 .chat-message.assistant .chat-bubble { background: var(--bg-panel); border: 1px solid var(--border-color); border-bottom-left-radius: var(--radius-sm); }
 .chat-role { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: var(--spacing-xs); opacity: 0.7; }
 .chat-text { line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 最终回答中的立绘图片画廊 */
+.answer-image-gallery { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); margin-top: var(--spacing-md); }
+.answer-image-item { display: flex; flex-direction: column; align-items: center; gap: var(--spacing-xs); padding: 0; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: var(--radius-sm); cursor: zoom-in; overflow: hidden; transition: border-color var(--transition-fast), transform var(--transition-fast); }
+.answer-image-item:hover { border-color: var(--color-primary-dim); transform: translateY(-2px); }
+.answer-image-item img { display: block; max-height: 220px; max-width: 160px; object-fit: contain; }
+.answer-image-label { width: 100%; max-width: 160px; font-size: 0.68rem; color: var(--text-dim); text-align: center; padding: 2px 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 图片放大灯箱 */
+.image-lightbox { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; background: rgba(4, 6, 10, 0.88); backdrop-filter: blur(4px); animation: fadeSlideIn 0.15s ease-out; }
+.image-lightbox-box { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--spacing-sm); max-width: 94vw; max-height: 94vh; }
+.image-lightbox-img { max-width: 92vw; max-height: 84vh; object-fit: contain; border-radius: var(--radius-md); box-shadow: var(--shadow-lg, 0 12px 40px rgba(0, 0, 0, 0.5)); background: #000; }
+.image-lightbox-label { font-size: 0.85rem; color: var(--text-secondary); text-align: center; }
+.image-lightbox-close { position: absolute; top: -14px; right: -14px; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-color); background: var(--bg-panel); color: var(--text-secondary); font-size: 18px; line-height: 1; cursor: pointer; z-index: 1; }
+.image-lightbox-close:hover { color: #fff; border-color: var(--color-primary-dim); }
 .chat-time { font-size: 0.7rem; opacity: 0.5; margin-top: var(--spacing-xs); text-align: right; }
+/* Agent 过程折叠卡片：一次展示「工具调用 N 轮」，点击展开全部思考与工具详情 */
+.process-card { max-width: 85%; margin-bottom: var(--spacing-md); margin-right: auto; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); animation: fadeSlideIn 0.3s ease-out; }
+.process-card-header { display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-sm) var(--spacing-md); cursor: pointer; user-select: none; border-radius: var(--radius-md); transition: border-color var(--transition-fast), background var(--transition-fast); }
+.process-card-header:hover { border-color: var(--color-primary-dim); background: var(--bg-panel); }
+.process-card-icon { font-size: 0.85rem; }
+.process-card-title { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); }
+.process-card-time { margin-left: auto; font-size: 0.7rem; color: var(--text-dim); font-family: var(--font-mono); }
+.process-card-toggle { font-size: 0.7rem; color: var(--text-dim); flex-shrink: 0; }
+.process-card.is-expanded .process-card-header { border-bottom: 1px solid var(--border-color); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.process-detail { margin-top: 0; margin-left: 14px; border-left: 3px solid var(--border-color); border-top-left-radius: 0; border-bottom-left-radius: 0; }
+
 /* Thinking card (clickable whole card to expand/collapse) */
 .thinking-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: var(--spacing-sm) var(--spacing-md); max-width: 85%; margin-bottom: var(--spacing-md); animation: fadeSlideIn 0.3s ease-out; margin-right: auto; cursor: pointer; transition: border-color var(--transition-fast); }
 .thinking-card:hover { border-color: var(--color-primary-dim); }
@@ -1464,8 +1609,6 @@ function applyQuickAction(question) {
 
 /* PRTS-MCP results */
 .tool-detail-mcp { display: flex; flex-direction: column; gap: var(--spacing-sm); }
-.tool-result-images-inline { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); margin-top: var(--spacing-xs); }
-.tool-result-images-inline .tool-detail-image { max-height: 180px; max-width: 120px; }
 .tool-detail-mcp-text { font-size: 0.72rem; color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .tool-detail-mcp-images { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); }
 .tool-detail-image-link { display: block; }

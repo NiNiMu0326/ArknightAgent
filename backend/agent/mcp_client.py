@@ -104,6 +104,11 @@ def extract_mcp_result(call_result: Any, tool_name: str = "") -> ToolResultPaylo
     images: List[Dict[str, str]] = []
     content = _attr(call_result, "content", None) or []
 
+    structured = _attr(call_result, "structured_content", None)
+    image_label = tool_name
+    if isinstance(structured, dict) and structured.get("label"):
+        image_label = str(structured["label"])
+
     for item in content:
         item_type = _attr(item, "type", None)
         if item_type == "text":
@@ -115,7 +120,7 @@ def extract_mcp_result(call_result: Any, tool_name: str = "") -> ToolResultPaylo
                 text_parts.append("[多余图片已省略]")
             elif data and len(data) <= MAX_IMAGE_B64_CHARS:
                 images.append({
-                    "label": tool_name,
+                    "label": image_label,
                     "mime": mime,
                     "data_url": f"data:{mime};base64,{data}",
                 })
@@ -123,7 +128,6 @@ def extract_mcp_result(call_result: Any, tool_name: str = "") -> ToolResultPaylo
                 text_parts.append(f"[图片过大已省略，base64 长度 {len(data)}]")
 
     text = "\n\n".join(part for part in text_parts if part)
-    structured = _attr(call_result, "structured_content", None)
     display_structured = (
         structured if structured is None
         else _truncate_json_for_display(structured, DISPLAY_RESULT_MAX_CHARS)
