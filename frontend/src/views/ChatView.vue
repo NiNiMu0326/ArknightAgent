@@ -422,15 +422,40 @@
           </form>
 
           <div class="quick-actions">
-            <div class="quick-questions">
-              <button
-                v-for="(action, idx) in quickQuestionsStore.quickActions"
-                :key="`qa-${idx}`"
-                class="quick-action"
-                @click="applyQuickAction(action.question)"
-                :title="action.question"
+            <div class="quick-questions-scroll">
+              <div
+                ref="quickQuestionsEl"
+                class="quick-questions"
+                @wheel="handleQuickQuestionsWheel"
+                @scroll="updateQuickScrollState"
               >
-                {{ action.label }}
+                <button
+                  v-for="(action, idx) in quickQuestionsStore.quickActions"
+                  :key="`qa-${idx}`"
+                  class="quick-action"
+                  @click="applyQuickAction(action.question)"
+                  :title="action.question"
+                >
+                  {{ action.label }}
+                </button>
+              </div>
+              <button
+                v-if="quickScrollState.canLeft"
+                type="button"
+                class="quick-scroll-btn left"
+                aria-label="向左滚动快捷问题"
+                @click.stop="scrollQuickQuestions(-1)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <button
+                v-if="quickScrollState.canRight"
+                type="button"
+                class="quick-scroll-btn right"
+                aria-label="向右滚动快捷问题"
+                @click.stop="scrollQuickQuestions(1)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
               </button>
             </div>
             <button class="quick-action refresh refresh-fixed" @click="refreshQuickActions" title="刷新问题" aria-label="刷新问题">
@@ -492,6 +517,8 @@ const expandedThinking = ref([])
 const expandedProcesses = ref([])
 const zoomImage = ref(null)
 const zoomScale = ref(1)
+const quickQuestionsEl = ref(null)
+const quickScrollState = reactive({ canLeft: false, canRight: false })
 
 const toolItemRefs = reactive({})
 const currentRound = ref(0)
@@ -559,6 +586,11 @@ onMounted(() => {
   // 浏览器可能在加载后恢复上次的滚动位置（且 0→0 时不触发 scroll 事件），
   // 延迟同步一次 userAtBottom，保证"回到底部"按钮状态与实际位置一致
   setTimeout(() => handleMessagesScroll(), 300)
+
+  // 快捷问题单行滚动状态
+  window.addEventListener('resize', updateQuickScrollState)
+  nextTick(updateQuickScrollState)
+  setTimeout(updateQuickScrollState, 300)
 })
 
 // Component deactivated (switched to another page) — keep request running in background
@@ -576,7 +608,14 @@ onActivated(() => {
 onUnmounted(() => {
   console.log('[ChatView] unmounted')
   stopElapsedTicker()
+  window.removeEventListener('resize', updateQuickScrollState)
 })
+
+// 快捷问题加载/刷新后，重新计算左右滚动箭头
+watch(
+  () => quickQuestionsStore.quickActions?.length,
+  () => nextTick(updateQuickScrollState),
+)
 
 // Watch for session changes to update lastResult
 watch(() => sessionStore.currentSessionId, (newId, oldId) => {
@@ -1424,6 +1463,37 @@ function applyQuickAction(question) {
     }
   })
 }
+
+// ===== 快捷问题单行横向滚动（PC/移动端通用） =====
+function updateQuickScrollState() {
+  const el = quickQuestionsEl.value
+  if (!el) {
+    quickScrollState.canLeft = false
+    quickScrollState.canRight = false
+    return
+  }
+  const overflow = el.scrollWidth > el.clientWidth + 1
+  quickScrollState.canLeft = overflow && el.scrollLeft > 2
+  quickScrollState.canRight = overflow && el.scrollLeft < el.scrollWidth - el.clientWidth - 2
+}
+
+function scrollQuickQuestions(direction) {
+  const el = quickQuestionsEl.value
+  if (!el) return
+  el.scrollBy({
+    left: direction * Math.min(320, Math.max(160, el.clientWidth * 0.7)),
+    behavior: 'smooth',
+  })
+}
+
+// 鼠标在问题行上滚动时转为横向滚动；触控板横向手势照常生效
+function handleQuickQuestionsWheel(event) {
+  const el = quickQuestionsEl.value
+  if (!el || el.scrollWidth <= el.clientWidth + 1) return
+  event.preventDefault()
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+  el.scrollLeft += delta
+}
 </script>
 
 <style scoped>
@@ -1473,8 +1543,13 @@ function applyQuickAction(question) {
 .empty-state-desc { font-size: 0.9rem; color: var(--text-dim); max-width: 300px; }
 .quick-actions { display: flex; align-items: center; flex-wrap: nowrap; gap: 0; margin-top: var(--spacing-sm); padding: 0; min-width: 0; }
 /* 问题区单行横向滚动，刷新键固定在最右不随内容滚动（PC/移动端一致） */
-.quick-questions { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: var(--spacing-xs); overflow-x: auto; padding-bottom: 2px; padding-right: var(--spacing-xs); margin-right: var(--spacing-xs); border-right: 1px solid var(--border-color); scrollbar-width: none; overscroll-behavior-x: contain; }
+.quick-questions-scroll { position: relative; flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+.quick-questions { width: 100%; display: flex; min-width: 0; flex-wrap: nowrap; gap: var(--spacing-xs); overflow-x: auto; padding: 2px 18px; margin-right: var(--spacing-xs); border-right: 1px solid var(--border-color); scrollbar-width: none; overscroll-behavior-x: contain; }
 .quick-questions::-webkit-scrollbar { display: none; }
+.quick-scroll-btn { position: absolute; top: 50%; transform: translateY(-50%); z-index: 2; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid var(--border-color); background: var(--bg-panel); color: var(--text-secondary); cursor: pointer; box-shadow: var(--shadow-sm, 0 2px 6px rgba(0, 0, 0, 0.15)); }
+.quick-scroll-btn:hover { color: var(--color-primary); border-color: var(--color-primary-dim); }
+.quick-scroll-btn.left { left: 0; }
+.quick-scroll-btn.right { right: 0; }
 .quick-action { flex: 0 0 auto; min-width: 0; padding: var(--spacing-xs) var(--spacing-md); background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: var(--radius-lg); color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; transition: all var(--transition-fast); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quick-action:hover { border-color: var(--color-primary-dim); color: var(--color-primary); }
 .quick-action.refresh:hover { border-color: var(--color-primary); }
