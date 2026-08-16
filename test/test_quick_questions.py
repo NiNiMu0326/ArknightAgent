@@ -79,3 +79,17 @@ class TestPickRagQuestion:
         q = pick_rag_question([], [], [], [], set())
         assert q["category"] == "rag"
         assert q["question"]
+
+    def test_kind_filter_returns_requested_type(self, monkeypatch):
+        monkeypatch.setattr("backend.quick_questions.random.shuffle", lambda seq: None)
+        monkeypatch.setattr("backend.quick_questions.random.choice", lambda seq: seq[0])
+        q = pick_rag_question(["阿米娅"], ["某故事"], ["源石虫"], [("银灰", ["老板"])], set(), kind="enemy")
+        assert q["type"] == "enemy"
+        assert q["category"] == "rag"
+        assert "源石虫" in q["question"]
+
+    def test_kind_filter_uses_same_kind_fallback_when_no_data(self):
+        q = pick_rag_question([], [], [], [], set(), kind="alias")
+        assert q["type"] == "alias"
+        assert q["category"] == "rag"
+        assert q["label"] == "银灰别名"

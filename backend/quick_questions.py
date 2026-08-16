@@ -1,7 +1,8 @@
 """
 Quick-question template pools: 4 capability categories.
 
-Each refresh returns a fuller batch (8 questions) built from real entity lists:
+Each refresh returns 9 questions, one per slot, with no duplicates within the batch:
+- relation (graph) + skill/story/enemy/alias (RAG) + structured + artwork + stage + item
 - operator names fill 「xxx立绘」 art questions
 - stage codes fill 「xxx出怪顺序」 / 「xxx材料掉落」 questions
 - stories/enemies/aliases fill RAG questions
@@ -9,7 +10,7 @@ Fixed templates act as fallback when local data is unavailable.
 """
 
 import random
-from typing import Dict, List, Sequence, Set
+from typing import Dict, List, Optional, Sequence, Set
 
 STRUCTURED_TEMPLATES = [
     {
@@ -66,7 +67,21 @@ RAG_FALLBACK_TEMPLATES = [
         "type": "story",
         "category": "rag",
     },
+    {
+        "label": "源石虫敌人",
+        "question": "源石虫的属性和能力是什么",
+        "type": "enemy",
+        "category": "rag",
+    },
+    {
+        "label": "银灰别名",
+        "question": "银灰的其他名称有哪些",
+        "type": "alias",
+        "category": "rag",
+    },
 ]
+
+RAG_FALLBACK_BY_KIND = {t["type"]: t for t in RAG_FALLBACK_TEMPLATES}
 
 
 def pick_template(templates: Sequence[Dict], exclude_labels: Set[str]) -> Dict:
@@ -138,8 +153,13 @@ def pick_rag_question(
     enemy_names: List[str],
     alias_candidates: List[tuple],
     exclude_labels: Set[str],
+    kind: Optional[str] = None,
 ) -> Dict:
-    """Pick one RAG-capability question, rotating across template kinds."""
+    """Pick one RAG question.
+
+    When `kind` is given, only that template kind is considered (skill/story/
+    enemy/alias), so a batch can show exactly one of each without duplicates.
+    """
     kinds = []
     if operator_names:
         kinds.append((
@@ -166,8 +186,13 @@ def pick_rag_question(
             lambda pair: f"{pair[0]}的其他名称有哪些",
         ))
 
-    random.shuffle(kinds)
-    for kind, candidates, label_fn, question_fn in kinds:
+    if kind is not None:
+        kinds = [item for item in kinds if item[0] == kind]
+    else:
+        random.shuffle(kinds)
+
+    last_pick = None
+    for kind_name, candidates, label_fn, question_fn in kinds:
         for _ in range(20):
             chosen = random.choice(candidates)
             label = label_fn(chosen)
@@ -175,9 +200,23 @@ def pick_rag_question(
                 return {
                     "label": label,
                     "question": question_fn(chosen),
-                    "type": kind,
+                    "type": kind_name,
                     "category": "rag",
                 }
+            last_pick = (kind_name, label, question_fn(chosen))
 
+    # 候选全部与上一批重复时，宁可按类型返回一条，也不能换成别的类型
+    if last_pick is not None:
+        kind_name, label, question = last_pick
+        return {
+            "label": label,
+            "question": question,
+            "type": kind_name,
+            "category": "rag",
+        }
+
+    # 该类型没有数据：用对应类型的固定兜底，保证 9 条槽位不缩水
+    if kind is not None and kind in RAG_FALLBACK_BY_KIND:
+        return dict(RAG_FALLBACK_BY_KIND[kind])
     fallback = random.choice(RAG_FALLBACK_TEMPLATES)
     return dict(fallback)

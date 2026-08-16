@@ -117,13 +117,16 @@
                     <span class="process-card-toggle">{{ isProcessExpanded(idx) ? '收起' : '展开' }}</span>
                   </div>
                 </div>
-                <div v-if="isProcessExpanded(idx)" class="thinking-card process-detail">
+                <div v-if="isProcessExpanded(idx)" class="thinking-card process-detail" @click="handleThinkingClick(idx)">
                   <div class="thinking-card-header">
                     <span class="thinking-card-round">Round {{ msg.round }}</span>
                     <span class="thinking-card-label">思考过程</span>
                     <span class="thinking-card-time" v-if="msg.time_ms">{{ formatTimeMs(msg.time_ms) }}</span>
                   </div>
-                  <div class="thinking-card-content">{{ msg.content }}</div>
+                  <div class="thinking-card-preview" v-if="!expandedThinking.includes(idx)">
+                    {{ msg.content.length > 60 ? msg.content.substring(0, 60) + '...' : msg.content }}
+                  </div>
+                  <div class="thinking-card-content" v-if="expandedThinking.includes(idx)">{{ msg.content }}</div>
                 </div>
               </template>
 
@@ -148,7 +151,8 @@
                       :key="call.id"
                       :ref="el => { if (el) { toolItemRefs[call.id] = el } else { delete toolItemRefs[call.id] } }"
                       class="tool-call-item"
-                      :class="{ 'has-result': msg.results?.[call.id], 'is-expanded': true, 'is-interrupted': msg.results?.[call.id]?.interrupted }"
+                      :class="{ 'has-result': msg.results?.[call.id], 'is-expanded': expandedTools.includes(call.id), 'is-interrupted': msg.results?.[call.id]?.interrupted }"
+                      @click="handleToolItemClick(call.id, $event)"
                     >
                       <div class="tool-call-name-row">
                         <div class="tool-call-name">
@@ -160,10 +164,13 @@
                           <span class="tool-result-time" v-if="msg.results?.[call.id] && !msg.results[call.id].interrupted">{{ Math.round(msg.results[call.id].time_ms) }}ms</span>
                         </div>
                       </div>
+                      <div class="tool-result-summary" :class="{ 'is-interrupted-text': msg.results?.[call.id]?.interrupted }" v-if="msg.results?.[call.id] && !expandedTools.includes(call.id)">
+                        {{ msg.results[call.id].summary }}
+                      </div>
                       <div class="tool-call-pending" v-if="!msg.results?.[call.id]">
                         <span class="pending-dot"></span> 执行中 {{ formatElapsed(nowTs - msg.timestamp) }}
                       </div>
-                      <div class="tool-result-detail" v-if="msg.results?.[call.id]">
+                      <div class="tool-result-detail" v-if="msg.results?.[call.id] && expandedTools.includes(call.id)">
                         <div class="tool-detail-summary">{{ msg.results[call.id].summary }}</div>
                         <div class="tool-detail-content" v-if="msg.results[call.id].data">
                           <template v-if="call.name === 'arknights_rag_search'">
@@ -691,8 +698,24 @@ function getProcessElapsed(idx) {
 function toggleProcessCard(idx) {
   const id = `proc-${getProcessStartIndex(idx)}`
   const i = expandedProcesses.value.indexOf(id)
-  if (i > -1) expandedProcesses.value.splice(i, 1)
-  else expandedProcesses.value.push(id)
+  if (i > -1) {
+    expandedProcesses.value.splice(i, 1)
+    // 收起整张过程卡片时，把内部已展开的思考/工具也一并复位，下次打开仍是默认折叠
+    const start = getProcessStartIndex(idx)
+    const group = getProcessMessages(idx)
+    const thinkingIdxs = new Set(
+      group.map((m, offset) => m.role === 'thinking' ? start + offset : -1).filter(v => v >= 0)
+    )
+    const toolIds = new Set(
+      group.flatMap(m => m.role === 'tool_call' ? (m.calls || []).map(c => c.id) : [])
+    )
+    expandedThinking.value = expandedThinking.value.filter(
+      v => v === 'current' || !thinkingIdxs.has(v)
+    )
+    expandedTools.value = expandedTools.value.filter(v => !toolIds.has(v))
+  } else {
+    expandedProcesses.value.push(id)
+  }
 }
 
 function formatToolResult(data) {

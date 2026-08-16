@@ -157,9 +157,11 @@ class TestDataEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert "questions" in data
-        assert len(data["questions"]) == 8
+        assert len(data["questions"]) == 9
         categories = {q["category"] for q in data["questions"]}
         assert categories == {"rag", "graph", "structured", "prts_mcp"}
+        rag_types = {q["type"] for q in data["questions"] if q["category"] == "rag"}
+        assert rag_types == {"skill", "story", "enemy", "alias"}
 
     def test_status_has_mcp_info(self):
         resp = run_async(_request("GET", "/status"))

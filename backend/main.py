@@ -1290,7 +1290,7 @@ def _load_qq_data():
 
 @app.get("/quick-questions")
 async def get_quick_questions(refresh: bool = False):
-    """生成8个快速问题，覆盖 RAG/GraphRAG/结构化查询/PRTS-MCP，并尽量从真实实体列表抽取。"""
+    """生成9个快速问题：关系+技能+故事+敌人+别名+结构化+立绘+出怪顺序+材料掉落，批内不重复。"""
     global _quick_questions_cache, _quick_questions_cache_time, _qq_previous_labels
 
     now = time.time()
@@ -1376,14 +1376,15 @@ async def get_quick_questions(refresh: bool = False):
         })
         exclude_labels.add(label)
 
-    # ===== RAG 能力：技能/故事/敌人/别名四类模板随机轮换，取 2 个 =====
-    for _ in range(2):
+    # ===== RAG 能力：技能/故事/敌人/别名 各 1 条，保持类型不重复 =====
+    for rag_kind in ("skill", "story", "enemy", "alias"):
         rag_question = pick_rag_question(
             _qq_operator_names or [],
             _qq_story_names or [],
             _qq_enemy_names or [],
             _qq_alias_candidates or [],
             exclude_labels,
+            kind=rag_kind,
         )
         questions.append(rag_question)
         exclude_labels.add(rag_question["label"])
@@ -1393,9 +1394,9 @@ async def get_quick_questions(refresh: bool = False):
     questions.append(structured_question)
     exclude_labels.add(structured_question["label"])
 
-    # ===== PRTS-MCP 能力：从真实列表抽取 xxx立绘 / xxx出怪顺序 / xxx材料掉落 =====
+    # ===== PRTS-MCP 能力：立绘/出怪顺序/材料掉落 各 1 条，类型不重复 =====
     questions.extend(pick_unique_questions(
-        _qq_operator_names or [], make_artwork_question, exclude_labels, 2,
+        _qq_operator_names or [], make_artwork_question, exclude_labels, 1,
     ))
     questions.extend(pick_unique_questions(
         _qq_stage_codes or [], make_stage_enemies_question, exclude_labels, 1,
@@ -1403,8 +1404,8 @@ async def get_quick_questions(refresh: bool = False):
     questions.extend(pick_unique_questions(
         _qq_stage_codes or [], make_stage_item_question, exclude_labels, 1,
     ))
-    # 数据缺失时用固定模板补齐到 8 个
-    while len(questions) < 8:
+    # 数据缺失时用固定模板补齐到 9 个
+    while len(questions) < 9:
         mcp_question = pick_template(PRTS_MCP_TEMPLATES, exclude_labels)
         questions.append(mcp_question)
         exclude_labels.add(mcp_question["label"])
