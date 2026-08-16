@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.agent import tool_implementations as ti
+from backend.agent.tool_result import ToolResultPayload
 
 
 def run(coro):
@@ -163,11 +164,15 @@ class TestExecuteGraphragSearch:
         builder.get_all_relations.return_value = [{"relation": "兄妹"}]
         with patch("backend.rag.graphrag.query.get_graph_builder", return_value=builder):
             result = run(ti.execute_graphrag_search({"entity": "银灰"}))
-            assert result["found"] is True
-            assert result["mode"] == "neighbors"
-            assert result["entity"] == "银灰"
-            assert result["neighbors"] == [{"entity": "恩希欧迪斯"}]
-            assert result["relations"] == [{"relation": "兄妹"}]
+            assert isinstance(result, ToolResultPayload)
+            llm = result.llm_content
+            assert llm["found"] is True
+            assert llm["mode"] == "neighbors"
+            assert llm["entity"] == "银灰"
+            assert llm["neighbors"] == [{"entity": "恩希欧迪斯"}]
+            # LLM 通道不重复携带 relations；前端展示保留完整数据
+            assert "relations" not in llm
+            assert result.display["relations"] == [{"relation": "兄妹"}]
 
     def test_single_entity_not_found(self):
         builder = MagicMock()

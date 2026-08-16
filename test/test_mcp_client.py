@@ -119,6 +119,36 @@ class TestExtractMcpResult:
         assert payload.display["structured"]["_truncated"] is True
         assert "长" * 60_000 not in payload.llm_content
 
+    def test_llm_prefers_markdown_and_omits_duplicate_structured(self):
+        raw = make_call_result(
+            content=[SimpleNamespace(type="text", text="# 物品列表\n- 固源岩")],
+            structured={"total": 100, "items": [{"name": "固源岩"}]},
+        )
+        payload = extract_mcp_result(raw, "list_items")
+        assert payload.llm_content == "# 物品列表\n- 固源岩"
+        assert "structuredContent" not in payload.llm_content
+        # 前端展示仍保留完整 structured 通道
+        assert payload.display["structured"]["total"] == 100
+
+    def test_llm_falls_back_to_structured_when_text_empty(self):
+        raw = make_call_result(
+            content=[],
+            structured={"rows": [{"name": "固源岩"}]},
+        )
+        payload = extract_mcp_result(raw, "get_item_info")
+        assert "structuredContent" in payload.llm_content
+        assert "固源岩" in payload.llm_content
+
+    def test_llm_budget_is_5000_chars(self):
+        raw = make_call_result(
+            content=[SimpleNamespace(type="text", text="源" * 20_000)],
+            structured={"x": "y" * 20_000},
+        )
+        payload = extract_mcp_result(raw, "list_items")
+        assert len(payload.llm_content) <= 5000
+        assert "已截断" in payload.llm_content
+        assert "分页" in payload.llm_content
+
     def test_long_text_content_is_truncated_for_llm_and_display(self):
         long_text = "源石" * 60_000
         raw = make_call_result(
@@ -127,7 +157,7 @@ class TestExtractMcpResult:
         )
         payload = extract_mcp_result(raw, "search_prts")
         # LLM 与前端展示都不应携带 12 万字符的原始文本
-        assert len(payload.llm_content) < 20_000
+        assert len(payload.llm_content) <= 5000
         assert len(payload.display["text"]) < 60_000
         assert "已截断" in payload.llm_content
         assert long_text not in payload.llm_content

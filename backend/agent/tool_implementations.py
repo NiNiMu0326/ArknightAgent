@@ -8,6 +8,8 @@ import logging
 import threading
 from typing import Dict, Any, List
 
+from backend.agent.tool_result import ToolResultPayload
+
 logger = logging.getLogger(__name__)
 
 # search_mode -> RRF vector_weight
@@ -170,13 +172,24 @@ async def execute_graphrag_search(arguments: Dict[str, Any], session_id: str = "
                     "message": f"未找到实体 '{entity}' 的关系信息",
                     "entity": entity,
                 }
-            return {
+            full = {
                 "found": True,
                 "mode": "neighbors",
                 "entity": entity,
                 "neighbors": neighbors,
                 "relations": relations,
             }
+            # neighbors 已包含方向/关系/描述，与 relations 是同一份邻居数据的两种
+            # 表示；LLM 通道只送 neighbors，避免双份 token。前端展示仍保留完整数据。
+            return ToolResultPayload(
+                llm_content={
+                    "found": full["found"],
+                    "mode": full["mode"],
+                    "entity": full["entity"],
+                    "neighbors": full["neighbors"],
+                },
+                display=full,
+            )
         else:
             return {"error": "请提供 entity 或 entity1+entity2 参数"}
 

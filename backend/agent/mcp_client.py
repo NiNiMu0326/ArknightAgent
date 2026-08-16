@@ -38,7 +38,7 @@ MCP_TOOL_PREFIX = "mcp__"
 def prefixed_mcp_tool_name(name: str) -> str:
     return MCP_TOOL_PREFIX + name
 
-LLM_RESULT_MAX_CHARS = 12_000
+LLM_RESULT_MAX_CHARS = 5_000  # LLM 通道总预算：只送最必要的渲染文本，避免 token 浪费
 DISPLAY_RESULT_MAX_CHARS = 50_000
 # large=1024px 立绘 base64 实测约 600KB；original 可能数 MB，仍会丢弃。
 MAX_IMAGE_B64_CHARS = 1_600_000
@@ -58,6 +58,18 @@ def _truncate_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 40] + "\n...(已截断)"
+
+
+def _truncate_llm_content(text: str) -> str:
+    """Truncate LLM-facing content to the global budget with actionable guidance.
+
+    保留前缀 + 截断标识；剩余部分直接丢弃（不落盘、不保留尾部），
+    并引导模型用 MCP 工具自带的分页参数（limit/offset/category）继续获取。
+    """
+    if len(text) <= LLM_RESULT_MAX_CHARS:
+        return text
+    suffix = "\n...(已截断，剩余内容未进入 LLM 上下文；请缩小查询范围，或用 limit/offset/category 分页获取)"
+    return text[:LLM_RESULT_MAX_CHARS - len(suffix)] + suffix
 
 
 def _truncate_json_for_display(value: Any, max_chars: int) -> Any:
@@ -142,14 +154,20 @@ def extract_mcp_result(call_result: Any, tool_name: str = "") -> ToolResultPaylo
         else _truncate_json_for_display(structured, DISPLAY_RESULT_MAX_CHARS)
     )
 
-    llm_parts = [_truncate_text(raw_text, LLM_RESULT_MAX_CHARS) or "(工具返回空文本)"]
-    if structured is not None:
-        llm_parts.append(
-            "structuredContent:\n" + _truncate_text(_json_text(structured), LLM_RESULT_MAX_CHARS)
-        )
+    # LLM 通道做信息过滤：Markdown 文本与 structuredContent 是同一份信息的
+    # 两种渲染，两个都送只会浪费 token。因此默认只送 Markdown 文本；
+    # 只有文本通道为空时才回退到结构化 JSON。总预算 LLM_RESULT_MAX_CHARS。
+    llm_content = _truncate_llm_content(raw_text)
+    if not llm_content:
+        if structured is not None:
+            llm_content = _truncate_llm_content(
+                "structuredContent:\n" + _json_text(structured)
+            )
+        if not llm_content:
+            llm_content = "(工具返回空文本)"
 
     return ToolResultPayload(
-        llm_content="\n\n".join(llm_parts),
+        llm_content=llm_content,
         display={
             "text": text,
             "structured": display_structured,
