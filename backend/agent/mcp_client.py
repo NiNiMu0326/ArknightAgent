@@ -30,6 +30,14 @@ MCP_ALLOWLIST = frozenset({
     "operator_artwork",
 })
 
+# 注册到 LLM/ToolRegistry 时统一加前缀，隔离外部 MCP 工具与本地工具命名空间；
+# MCP 子进程调用仍使用原始名称，因为 prts-mcp 不感知此前缀。
+MCP_TOOL_PREFIX = "mcp__"
+
+
+def prefixed_mcp_tool_name(name: str) -> str:
+    return MCP_TOOL_PREFIX + name
+
 LLM_RESULT_MAX_CHARS = 12_000
 DISPLAY_RESULT_MAX_CHARS = 50_000
 # large=1024px 立绘 base64 实测约 600KB；original 可能数 MB，仍会丢弃。
@@ -227,15 +235,24 @@ def make_mcp_executor(manager: "McpClientManager", tool_name: str):
 
 
 def register_mcp_tools(registry, manager: "McpClientManager") -> int:
-    """Register allowlisted MCP tools (schemas + executors) into a ToolRegistry."""
+    """Register allowlisted MCP tools (schemas + executors) into a ToolRegistry.
+
+    LLM-facing names are prefixed with ``mcp__`` so external MCP tools can never
+    collide with local tools, while the MCP subprocess is still called with the
+    original name (``manager.call_tool`` receives the unprefixed tool name).
+    """
     registered = 0
     for tool in manager.tools:
         name = _attr(tool, "name", "")
         if name not in MCP_ALLOWLIST:
             continue
+        registered_name = prefixed_mcp_tool_name(name)
+        # convert_mcp_tool_to_openai_schema still sees the original name so
+        # operator_artwork's description/property mutations stay keyed correctly.
         schema = convert_mcp_tool_to_openai_schema(tool)
+        schema["function"]["name"] = registered_name
         registry.register_schema(schema)
-        registry.register(name, make_mcp_executor(manager, name))
+        registry.register(registered_name, make_mcp_executor(manager, name))
         registered += 1
     logger.info(f"[MCP] registered {registered} prts-mcp tools")
     return registered

@@ -5,10 +5,12 @@
 import { describe, it, expect } from 'vitest'
 import {
   MCP_TOOL_NAMES,
+  MCP_TOOL_PREFIX,
   isMcpTool,
   getToolIcon,
   getToolDisplayName,
   summarizeMcpToolArgs,
+  normalizeMcpToolName,
   normalizeMcpDisplay,
 } from '../src/utils/toolMeta.js'
 
@@ -18,6 +20,15 @@ describe('MCP tool metadata', () => {
     expect(isMcpTool('get_stage_enemies')).toBe(true)
     expect(isMcpTool('operator_artwork')).toBe(true)
     expect(isMcpTool('arknights_rag_search')).toBe(false)
+  })
+
+  it('supports prefixed MCP tool names for display and history compatibility', () => {
+    expect(MCP_TOOL_PREFIX).toBe('mcp__')
+    expect(normalizeMcpToolName('mcp__search_prts')).toBe('search_prts')
+    expect(isMcpTool('mcp__get_stage_enemies')).toBe(true)
+    expect(getToolDisplayName('mcp__get_stage_enemies')).toBe('关卡出怪')
+    expect(getToolIcon('mcp__operator_artwork')).toBe('🖼️')
+    expect(summarizeMcpToolArgs('mcp__get_stage_enemies', { stage_id: 'main_01-07' })).toBe('出怪: main_01-07')
   })
 
   it('resolves MCP display names and icons', () => {

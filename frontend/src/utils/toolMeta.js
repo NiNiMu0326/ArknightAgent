@@ -12,6 +12,15 @@ export const MCP_TOOL_NAMES = new Set([
   'operator_artwork',
 ])
 
+export const MCP_TOOL_PREFIX = 'mcp__'
+
+export function normalizeMcpToolName(name) {
+  if (typeof name === 'string' && name.startsWith(MCP_TOOL_PREFIX)) {
+    return name.slice(MCP_TOOL_PREFIX.length)
+  }
+  return name
+}
+
 export const TOOL_ICONS = {
   arknights_rag_search: '📚',
   arknights_graphrag_search: '🕸️',
@@ -43,20 +52,21 @@ export const TOOL_DISPLAY_NAMES = {
 }
 
 export function isMcpTool(name) {
-  return MCP_TOOL_NAMES.has(name)
+  return MCP_TOOL_NAMES.has(normalizeMcpToolName(name))
 }
 
 export function getToolIcon(name) {
-  return TOOL_ICONS[name] || '🔧'
+  return TOOL_ICONS[normalizeMcpToolName(name)] || '🔧'
 }
 
 export function getToolDisplayName(name) {
-  return TOOL_DISPLAY_NAMES[name] || name
+  return TOOL_DISPLAY_NAMES[normalizeMcpToolName(name)] || name
 }
 
 export function summarizeMcpToolArgs(toolName, args) {
   if (!args || typeof args !== 'object') return ''
-  switch (toolName) {
+  const normalizedName = normalizeMcpToolName(toolName)
+  switch (normalizedName) {
     case 'search_prts':
       return `搜索: "${args.query || ''}"`
     case 'get_stage_info':

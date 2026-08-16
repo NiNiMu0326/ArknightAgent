@@ -153,8 +153,32 @@ class TestRegisterMcpTools:
         registry = self.FakeRegistry()
         count = register_mcp_tools(registry, SimpleNamespace(tools=manager_tools))
         assert count == 1
-        assert "get_item_info" in registry.executors
+        assert "mcp__get_item_info" in registry.executors
+        assert "get_item_info" not in registry.executors
         assert "get_operator_archives" not in registry.executors
+        assert registry.schemas[0]["function"]["name"] == "mcp__get_item_info"
+
+    def test_prefixed_executor_calls_mcp_manager_with_original_name(self):
+        class FakeManager:
+            def __init__(self):
+                self.tools = [make_tool("get_item_info", "d", {"type": "object"})]
+                self.called_name = None
+
+            async def call_tool(self, name, arguments):
+                self.called_name = name
+                return make_call_result(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    structured=None,
+                )
+
+        fake = FakeManager()
+        registry = self.FakeRegistry()
+        register_mcp_tools(registry, fake)
+
+        executor = registry.executors["mcp__get_item_info"]
+        payload = asyncio.run(executor({"name": "源岩"}))
+        assert fake.called_name == "get_item_info"
+        assert payload.llm_content == "ok"
 
     def test_executor_forces_artwork_preview(self):
         manager_tools = [make_tool("operator_artwork", "d", {"type": "object"})]
