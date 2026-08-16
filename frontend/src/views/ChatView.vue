@@ -11,23 +11,6 @@
             </svg>
             <div class="empty-state-title">准备就绪</div>
             <div class="empty-state-desc">向我询问关于明日方舟干员、剧情和游戏知识的问题</div>
-            <div class="empty-state-actions">
-              <button
-                v-for="(action, idx) in quickQuestionsStore.quickActions"
-                :key="`eqa-${idx}`"
-                class="quick-action"
-                @click="applyQuickAction(action.question)"
-                :title="action.question"
-              >
-                {{ action.label }}
-              </button>
-              <button class="quick-action refresh" @click="refreshQuickActions" title="刷新问题" aria-label="刷新问题">
-                <svg class="refresh-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M23 4v6h-6"/>
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                </svg>
-              </button>
-            </div>
           </div>
           <div v-else>
             <div
@@ -1293,16 +1276,14 @@ function applyQuickAction(question) {
 .fade-enter-from, .fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 
 
-/* Desktop: empty chat keeps the centered quick actions; hide the duplicate row under the input */
-.chat-body:not(.has-messages) .chat-input-area .quick-actions { display: none; }
+/* 快捷问题统一位于输入框下方；空状态不再显示居中的重复按钮组 */
 
 /* Mobile: hide sidebar, full-screen chat */
 @media (max-width: 768px) {
   .chat-input-area { padding: var(--spacing-md); padding-bottom: calc(var(--spacing-md) + env(safe-area-inset-bottom)); }
   .chat-input { font-size: 16px; min-height: 44px; padding: 10px 12px; }
   .chat-messages { padding: var(--spacing-md); }
-  /* 移动端：隐藏空状态居中的按钮组，快速问题统一放到输入框下方单行 */
-  .chat-body:not(.has-messages) .empty-state-actions { display: none; }
+  /* 快捷问题统一放到输入框下方单行 */
   /* 输入框下方始终显示：问题区可横滑，刷新键固定在最右不随内容滚动 */
   .chat-body:not(.has-messages) .chat-input-area .quick-actions { display: flex; }
   .chat-input-area .quick-actions { gap: 0; flex-wrap: nowrap; margin-top: var(--spacing-sm); padding: 0; }
@@ -1319,7 +1300,6 @@ function applyQuickAction(question) {
 .empty-state-icon { color: var(--text-dim); margin-bottom: var(--spacing-md); }
 .empty-state-title { font-family: var(--font-display); font-size: 1.25rem; color: var(--text-secondary); margin-bottom: var(--spacing-sm); }
 .empty-state-desc { font-size: 0.9rem; color: var(--text-dim); max-width: 300px; }
-.empty-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--spacing-sm); margin-top: var(--spacing-lg); max-width: 100%; padding: 0 var(--spacing-md); }
 .quick-actions { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); margin-top: var(--spacing-md); padding: 0 var(--spacing-sm); }
 /* Desktop: wrapper disappears so question buttons participate directly in .quick-actions layout */
 .quick-questions { display: contents; }
