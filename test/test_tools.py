@@ -23,8 +23,16 @@ class TestToolSchemas:
     """Verify the structure and content of tool schema definitions."""
 
     def test_tools_registered(self):
-        """There should be exactly 4 tool schemas (rag, graphrag, web, structured)."""
-        assert len(TOOL_SCHEMAS) == 4
+        """There should be exactly 5 tool schemas (rag, graphrag, web, stage_waves, structured)."""
+        assert len(TOOL_SCHEMAS) == 5
+
+    def test_stage_waves_schema(self):
+        names = [s["function"]["name"] for s in TOOL_SCHEMAS]
+        assert "arknights_stage_waves" in names
+        schema = next(s for s in TOOL_SCHEMAS if s["function"]["name"] == "arknights_stage_waves")
+        params = schema["function"]["parameters"]
+        assert "stage_code" in params["properties"]
+        assert params["required"] == ["stage_code"]
 
     def test_rag_search_schema(self):
         """arknights_rag_search schema should have correct structure."""

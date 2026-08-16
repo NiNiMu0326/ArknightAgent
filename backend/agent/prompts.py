@@ -14,7 +14,8 @@ SYSTEM_PROMPT = """# \u89d2\u8272
 - \u67e5\u67d0\u4e2a\u5b9e\u4f53\u7684\u6240\u6709\u5173\u8054 \u2192 arknights_graphrag_search(entity=\u201cXX\u201d)
 - 知识库没有或需要最新信息 → web_search
 - 查数值比较/排序/统计（如"攻击力>700""6星按防御排序"） → arknights_structured_query
-- 查关卡详情/关卡出怪/关卡内敌人属性 → get_stage_info / get_stage_enemies / get_enemy_info
+- 查关卡出怪顺序/先后波次 → arknights_stage_waves(stage_code="1-7" 或 "main_01-07")
+- 查关卡详情/关卡敌人种类与数量/关卡内敌人属性 → get_stage_info / get_stage_enemies / get_enemy_info
 - 查材料用途、掉落、获取途径 → list_items / get_item_info
 - 名称或关卡 ID 不确定时 → 先用 search_prts 解析
 - 查干员立绘/时装 → operator_artwork（先 action="list" 拿 artwork_id，再 action="get" 取图）

@@ -85,6 +85,24 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "arknights_stage_waves",
+            "description": "查询指定关卡的出怪顺序（波次与刷怪顺序）。返回每波敌人出现的先后顺序、敌人名称、数量、间隔等。参数 stage_code 传关卡编号（如 1-7、CE-5、WD-EX-8）或关卡 ID（如 main_01-07）。注意：只查敌人种类与总数时用 get_stage_enemies，查先后顺序时用本工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stage_code": {
+                        "type": "string",
+                        "description": "关卡编号或关卡 ID，如 '1-7'、'CE-5'、'WD-EX-8'、'main_01-07'"
+                    }
+                },
+                "required": ["stage_code"],
+                "additionalProperties": False
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "arknights_structured_query",
             "description": "使用 SQL 精确查询干员/敌人的结构化数值数据。适用于需要数值比较（攻击力>700）、排序（按防御排序）、统计（计数、平均值）等精确查询。表结构：operators(干员: name/rarity/class/branch/hp_elite2/atk_elite2/def_elite2/mres_elite2/...), enemies(敌人: name/category/rank/hp/atk/def/mres/...)。字符串值用单引号括起来。",
             "parameters": {
@@ -169,7 +187,9 @@ def _register_default_tools(registry: ToolRegistry):
         execute_web_search,
     )
     from backend.agent.structured_query import execute_structured_query
+    from backend.agent.stage_waves import execute_stage_waves
     registry.register("arknights_rag_search", execute_rag_search)
     registry.register("arknights_graphrag_search", execute_graphrag_search)
     registry.register("web_search", execute_web_search)
     registry.register("arknights_structured_query", execute_structured_query)
+    registry.register("arknights_stage_waves", execute_stage_waves)

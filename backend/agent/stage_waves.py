@@ -1,0 +1,244 @@
+"""
+Stage spawn-order tool.
+
+Reads the prts-mcp synced `stage_table.json` + per-level JSON files and turns
+the raw `waves`/`fragments`/`actions` data into a readable spawn sequence.
+
+This complements prts-mcp's `get_stage_enemies`, which only returns the enemy
+list with total counts and battle stats — it has no wave/order information.
+"""
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# Lazy caches (loaded once per process).
+_stage_table: Optional[Dict[str, Any]] = None
+_enemy_names: Optional[Dict[str, str]] = None
+_levels_root: Optional[Path] = None
+_levels_root_missing: bool = False
+
+
+def _share_root() -> Path:
+    base = os.environ.get("PRTS_MCP_DATA_DIR")
+    if base:
+        return Path(base)
+    return Path.home() / ".local/share/prts-mcp"
+
+
+def _latest_zh_dir(kind: str) -> Optional[Path]:
+    """Return .../gamedata[-levels]/.releases/<hash>/zh_CN for a data kind."""
+    releases = _share_root() / kind / ".releases"
+    if not releases.exists():
+        return None
+    candidates = sorted(releases.glob("*/zh_CN"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _load_stage_table() -> Dict[str, Any]:
+    global _stage_table
+    if _stage_table is not None:
+        return _stage_table
+    _stage_table = {}
+    zh = _latest_zh_dir("gamedata")
+    if zh:
+        table_file = zh / "gamedata/excel/stage_table.json"
+        try:
+            with open(table_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _stage_table = data.get("stages", {})
+            logger.info(f"[stage-waves] loaded {len(_stage_table)} stages")
+        except Exception as exc:
+            logger.warning(f"[stage-waves] load stage_table failed: {exc}")
+    return _stage_table
+
+
+def _load_enemy_names() -> Dict[str, str]:
+    global _enemy_names
+    if _enemy_names is not None:
+        return _enemy_names
+    _enemy_names = {}
+    zh = _latest_zh_dir("gamedata")
+    if zh:
+        handbook = zh / "gamedata/excel/enemy_handbook_table.json"
+        try:
+            with open(handbook, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            enemy_data = data.get("enemyData", {})
+            if isinstance(enemy_data, dict):
+                for enemy_id, info in enemy_data.items():
+                    if isinstance(info, dict) and info.get("name"):
+                        _enemy_names[enemy_id] = str(info["name"])
+            logger.info(f"[stage-waves] loaded {len(_enemy_names)} enemy names")
+        except Exception as exc:
+            logger.warning(f"[stage-waves] load enemy handbook failed: {exc}")
+    return _enemy_names
+
+
+def _get_levels_root() -> Optional[Path]:
+    global _levels_root, _levels_root_missing
+    if _levels_root is not None or _levels_root_missing:
+        return _levels_root
+    zh = _latest_zh_dir("gamedata-levels")
+    if zh:
+        candidate = zh / "gamedata/levels"
+        if candidate.exists():
+            _levels_root = candidate
+            return _levels_root
+    _levels_root_missing = True
+    return None
+
+
+def _resolve_stage(stage_key: str) -> Optional[Dict[str, Any]]:
+    """Resolve `1-7` or `main_01-07` to a stage_table entry."""
+    stages = _load_stage_table()
+    if not stages:
+        return None
+    key = (stage_key or "").strip()
+    if not key:
+        return None
+
+    # stageId exact match (prefer normal difficulty over #f#)
+    normal = stages.get(key)
+    if isinstance(normal, dict):
+        return normal
+
+    # code match (e.g. 1-7 -> main_01-07)
+    for stage_id, info in stages.items():
+        if not isinstance(info, dict):
+            continue
+        if (info.get("code") or "") == key and "#f#" not in stage_id:
+            return info
+    for stage_id, info in stages.items():
+        if not isinstance(info, dict):
+            continue
+        if (info.get("code") or "") == key:
+            return info
+    return None
+
+
+def _enemy_name(enemy_id: str) -> str:
+    if not enemy_id:
+        return "未知敌人"
+    return _load_enemy_names().get(enemy_id, enemy_id)
+
+
+def _load_level_json(stage_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    level_id = (stage_info.get("levelId") or "").strip()
+    if not level_id:
+        return None
+    root = _get_levels_root()
+    if not root:
+        return None
+    rel = level_id.lower()
+    if not rel.endswith(".json"):
+        rel += ".json"
+    candidate = root / rel
+    if candidate.exists():
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.warning(f"[stage-waves] load level json failed: {exc}")
+            return None
+    # 兜底：按 levelId 最后一段文件名搜索
+    file_name = Path(level_id).name.lower()
+    if not file_name.endswith(".json"):
+        file_name += ".json"
+    matches = list(root.rglob(file_name))
+    if matches:
+        try:
+            with open(matches[0], "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.warning(f"[stage-waves] load level json fallback failed: {exc}")
+    return None
+
+
+def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Flatten waves/fragments/actions into an ordered spawn sequence."""
+    spawns: List[Dict[str, Any]] = []
+    waves = level_data.get("waves", [])
+    if not isinstance(waves, list):
+        return spawns
+
+    for wave_idx, wave in enumerate(waves, start=1):
+        if not isinstance(wave, dict):
+            continue
+        fragments = wave.get("fragments", [])
+        if not isinstance(fragments, list):
+            continue
+        for fragment in fragments:
+            if not isinstance(fragment, dict):
+                continue
+            actions = fragment.get("actions", [])
+            if not isinstance(actions, list):
+                continue
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                action_type = action.get("actionType", "")
+                enemy_key = action.get("key", "")
+                # 只统计真正刷出的敌人；STORY/PREVIEW_CURSOR 等非刷怪动作跳过
+                if action_type != "SPAWN" or not enemy_key.startswith("enemy_"):
+                    continue
+                spawns.append({
+                    "wave": wave_idx,
+                    "enemy_id": enemy_key,
+                    "enemy_name": _enemy_name(enemy_key),
+                    "count": int(action.get("count", 1) or 1),
+                    "pre_delay": float(action.get("preDelay", 0) or 0),
+                    "interval": float(action.get("interval", 0) or 0),
+                    "route_index": action.get("routeIndex"),
+                })
+    return spawns
+
+
+async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -> Dict[str, Any]:
+    """Execute arknights_stage_waves tool."""
+    stage_key = str(arguments.get("stage_code") or arguments.get("stage_id") or "").strip()
+    if not stage_key:
+        return {"error": "stage_code 参数必填，例如 '1-7'、'CE-5' 或 'main_01-07'"}
+
+    stage_info = _resolve_stage(stage_key)
+    if not stage_info:
+        return {
+            "error": f"未找到关卡 '{stage_key}'。请检查关卡编号（如 1-7、CE-5），"
+                     "或先查关卡列表确认 ID",
+        }
+
+    level_data = _load_level_json(stage_info)
+    if not level_data:
+        return {
+            "error": f"关卡 '{stage_key}' 的出怪数据文件不可用（未同步 levels 数据），"
+                     "可改用 get_stage_enemies 查看敌人列表与数量",
+        }
+
+    spawns = _spawn_sequence(level_data)
+    waves = []
+    for spawn in spawns:
+        wave_num = spawn["wave"]
+        if not waves or waves[-1]["wave"] != wave_num:
+            waves.append({"wave": wave_num, "spawns": []})
+        waves[-1]["spawns"].append({
+            "order": len(waves[-1]["spawns"]) + 1,
+            "enemy_id": spawn["enemy_id"],
+            "enemy_name": spawn["enemy_name"],
+            "count": spawn["count"],
+            "pre_delay": spawn["pre_delay"],
+            "interval": spawn["interval"],
+            "route_index": spawn["route_index"],
+        })
+
+    return {
+        "stage_code": stage_info.get("code", stage_key),
+        "stage_id": stage_info.get("stageId", stage_key),
+        "stage_name": stage_info.get("name", ""),
+        "total_waves": len(waves),
+        "waves": waves,
+        "note": "waves 按关卡数据文件顺序排列；pre_delay/interval 为关卡原始数据（秒），仅供参考",
+    }

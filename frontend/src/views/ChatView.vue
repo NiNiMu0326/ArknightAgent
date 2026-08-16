@@ -1534,6 +1534,8 @@ function handleQuickQuestionsWheel(event) {
   .chat-message { max-width: 92%; }
   .chat-bubble { padding: var(--spacing-sm) var(--spacing-md); }
   .thinking-card, .tool-call-card { max-width: 95%; }
+  .answer-image-item img { max-height: 220px; max-width: 170px; }
+  .answer-image-label { max-width: 170px; }
   /* 窄屏下编辑输入框取消 320px 最小宽度，避免撑破用户气泡 */
   .chat-edit-input { min-width: 0; }
 }
@@ -1589,8 +1591,8 @@ function handleQuickQuestionsWheel(event) {
 .answer-image-gallery { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); margin-top: var(--spacing-md); }
 .answer-image-item { display: flex; flex-direction: column; align-items: center; gap: var(--spacing-xs); padding: 0; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: var(--radius-sm); cursor: zoom-in; overflow: hidden; transition: border-color var(--transition-fast), transform var(--transition-fast); }
 .answer-image-item:hover { border-color: var(--color-primary-dim); transform: translateY(-2px); }
-.answer-image-item img { display: block; max-height: 220px; max-width: 160px; object-fit: contain; }
-.answer-image-label { width: 100%; max-width: 160px; font-size: 0.68rem; color: var(--text-dim); text-align: center; padding: 2px 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.answer-image-item img { display: block; max-height: 340px; max-width: 260px; object-fit: contain; }
+.answer-image-label { width: 100%; max-width: 260px; font-size: 0.68rem; color: var(--text-dim); text-align: center; padding: 2px 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 图片放大灯箱 */
 .image-lightbox { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; background: rgba(4, 6, 10, 0.88); backdrop-filter: blur(4px); animation: fadeSlideIn 0.15s ease-out; }
 .image-lightbox-box { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--spacing-sm); max-width: 94vw; max-height: 94vh; }
