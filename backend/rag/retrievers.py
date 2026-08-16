@@ -2,12 +2,11 @@
 MultiChannelRetriever: BM25 + FAISS Vector + RRF across 3 collections.
 Wraps the existing hybrid_search logic as a LangChain BaseRetriever.
 """
-import time
 import hashlib
 import logging
 import threading
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langchain_core.documents import Document
@@ -15,6 +14,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
 from pydantic import Field
 
+from backend.rag.cache import LRUCache
 from backend.lc.embeddings import SiliconFlowEmbeddings
 from backend.data.bm25_index import BM25Indexer
 from backend.storage.faiss_client import FAISSClientWrapper
@@ -23,11 +23,11 @@ from backend import config
 RRF_K = config.RRF_K
 logger = logging.getLogger(__name__)
 
-# ===== LRU Cache with 5-hour TTL for recall results =====
-_RECALL_CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
+# ===== Shared LRU cache with 5-hour TTL for recall results =====
 _RECALL_CACHE_LOCK = threading.Lock()
 _RECALL_CACHE_TTL = 18000  # 5 hours
 _RECALL_CACHE_MAX_SIZE = 200
+_RECALL_CACHE = LRUCache(max_size=_RECALL_CACHE_MAX_SIZE, ttl_seconds=_RECALL_CACHE_TTL)
 
 
 def _doc_to_dict(doc: Document) -> Dict:
@@ -50,26 +50,17 @@ def _get_recall_cache_key(
 
 def _get_cached_recall(cache_key: str) -> Optional[List[Dict]]:
     with _RECALL_CACHE_LOCK:
-        if cache_key in _RECALL_CACHE:
-            timestamp, results = _RECALL_CACHE[cache_key]
-            if time.time() - timestamp < _RECALL_CACHE_TTL:
-                age_min = round((time.time() - timestamp) / 60, 1)
-                logger.info(f"[RecallCache] HIT (age={age_min}min, cache_size={len(_RECALL_CACHE)})")
-                return results
-            else:
-                del _RECALL_CACHE[cache_key]
-                logger.info(f"[RecallCache] EXPIRED (cache_size={len(_RECALL_CACHE)})")
-        else:
-            logger.info(f"[RecallCache] MISS (cache_size={len(_RECALL_CACHE)})")
+        cached = _RECALL_CACHE.get(cache_key)
+        if cached is not None:
+            logger.info(f"[RecallCache] HIT (cache_size={len(_RECALL_CACHE)})")
+            return cached
+        logger.info(f"[RecallCache] MISS (cache_size={len(_RECALL_CACHE)})")
     return None
 
 
 def _set_cached_recall(cache_key: str, results: List[Dict]) -> None:
     with _RECALL_CACHE_LOCK:
-        if len(_RECALL_CACHE) >= _RECALL_CACHE_MAX_SIZE:
-            oldest_key = next(iter(_RECALL_CACHE))
-            del _RECALL_CACHE[oldest_key]
-        _RECALL_CACHE[cache_key] = (time.time(), results)
+        _RECALL_CACHE.set(cache_key, results)
         logger.info(f"[RecallCache] STORED {len(results)} docs (cache_size={len(_RECALL_CACHE)})")
 
 

@@ -8,6 +8,7 @@ import pytest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backend.rag.cache import LRUCache
 from backend.rag.retrievers import (
     _rrf_fusion,
     _get_recall_cache_key,
@@ -102,13 +103,10 @@ class TestRecallCache:
         result = _get_cached_recall(key)
         assert result == docs
 
-    def test_cache_expiry(self):
+    def test_cache_expiry(self, monkeypatch):
+        import backend.rag.retrievers as retrievers
+        monkeypatch.setattr(retrievers, "_RECALL_CACHE", LRUCache(max_size=10, ttl_seconds=0.01))
         key = "expire_key"
         _set_cached_recall(key, [{"content": "x"}])
-        # Monkey-patch TTL to expire immediately
-        import backend.rag.retrievers as retrievers
-        retrievers._RECALL_CACHE_TTL = 0
-        result = _get_cached_recall(key)
-        # Put it back
-        retrievers._RECALL_CACHE_TTL = 18000
-        assert result is None
+        time.sleep(0.02)
+        assert _get_cached_recall(key) is None

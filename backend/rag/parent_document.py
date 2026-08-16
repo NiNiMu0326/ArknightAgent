@@ -2,55 +2,9 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import List, Dict, Optional
-from collections import OrderedDict
+from typing import List, Dict
 
-class LRUCache:
-    """Simple LRU cache with size limit and optional TTL."""
-    def __init__(self, max_size: int = 100, ttl_seconds: float = None):
-        self._cache = OrderedDict()
-        self._max_size = max_size
-        self._ttl_seconds = ttl_seconds  # Time-to-live in seconds
-
-    def get(self, key: str) -> Optional[str]:
-        if key in self._cache:
-            # Check expiration
-            if self._ttl_seconds is not None:
-                entry = self._cache[key]
-                if time.time() - entry['timestamp'] > self._ttl_seconds:
-                    del self._cache[key]
-                    return None
-            # Move to end (most recently used)
-            self._cache.move_to_end(key)
-            entry = self._cache[key]
-            return entry['value'] if isinstance(entry, dict) else entry
-        return None
-
-    def set(self, key: str, value: str) -> None:
-        if key in self._cache:
-            self._cache.move_to_end(key)
-        else:
-            if len(self._cache) >= self._max_size:
-                # Remove least recently used item
-                self._cache.popitem(last=False)
-        if self._ttl_seconds:
-            self._cache[key] = {'value': value, 'timestamp': time.time()}
-        else:
-            self._cache[key] = value
-
-    def __contains__(self, key: str) -> bool:
-        if key in self._cache:
-            if self._ttl_seconds is not None:
-                entry = self._cache[key]
-                if time.time() - entry['timestamp'] > self._ttl_seconds:
-                    del self._cache[key]
-                    return False
-            return True
-        return False
-
-    def __len__(self) -> int:
-        return len(self._cache)
-
+from backend.rag.cache import LRUCache
 
 # 进程级共享缓存：ParentDocumentRetriever 每次工具调用都会新建实例，
 # 若缓存挂在实例上会在请求结束后立即失效，导致每次检索都重新扫描/读取文件。
