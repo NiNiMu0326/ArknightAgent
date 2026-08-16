@@ -72,7 +72,7 @@
               <!-- Assistant message -->
               <template v-else-if="msg.role === 'assistant'">
                 <div class="chat-bubble">
-                  <div class="chat-role">Arknights RAG</div>
+                  <div class="chat-role">Arknights Agent</div>
                   <div class="chat-text markdown-body" v-html="renderMessageWithSources(msg.content, msg.sources)"></div>
                   <div
                     class="answer-image-gallery"
@@ -346,13 +346,13 @@
             </div>
             <div class="chat-message assistant" v-if="currentAnswer">
               <div class="chat-bubble">
-                <div class="chat-role">Arknights RAG</div>
+                <div class="chat-role">Arknights Agent</div>
                 <div class="current-answer markdown-body is-streaming" v-html="renderMessageWithSources(currentAnswer, currentAnswerSources)"></div>
               </div>
             </div>
             <div class="chat-message assistant" v-if="!currentAnswer && !currentThinking">
               <div class="chat-bubble">
-                <div class="chat-role">Arknights RAG</div>
+                <div class="chat-role">Arknights Agent</div>
                 <div class="typing-indicator">
                   <span></span><span></span><span></span>
                 </div>
@@ -1100,6 +1100,15 @@ async function startAgentStream(content) {
           currentThinking.value = ''
           currentThinkingTimeMs.value = 0
           currentRound.value = streamRound
+          // 生成期间默认展开「工具调用 N 轮」过程卡片；answer_done 后再整体折叠
+          const streamMessages = sessionStore.sessions[streamSessionId]?.messages
+          if (streamMessages?.length) {
+            const lastIdx = streamMessages.length - 1
+            const processId = `proc-${getProcessStartIndex(lastIdx)}`
+            if (!expandedProcesses.value.includes(processId)) {
+              expandedProcesses.value.push(processId)
+            }
+          }
         }
       },
 

@@ -5,7 +5,7 @@
         <span class="logo-icon">A</span>
         <div class="logo-text">
           <span class="logo-title">Arknights</span>
-          <span class="logo-subtitle">RAG System</span>
+          <span class="logo-subtitle">Agent System</span>
         </div>
       </div>
     </div>

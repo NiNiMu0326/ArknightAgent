@@ -160,13 +160,18 @@ def _load_level_json(stage_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Flatten waves/fragments/actions into an ordered spawn sequence."""
+    """Flatten waves/fragments/actions into an ordered spawn sequence.
+
+    关卡 JSON 通常只有一个 `waves` 元素，真正的“波次”体现在其 fragments
+    列表里，因此这里把每个 fragment 作为一个用户可见的波次。
+    """
     spawns: List[Dict[str, Any]] = []
     waves = level_data.get("waves", [])
     if not isinstance(waves, list):
         return spawns
 
-    for wave_idx, wave in enumerate(waves, start=1):
+    wave_counter = 0
+    for wave in waves:
         if not isinstance(wave, dict):
             continue
         fragments = wave.get("fragments", [])
@@ -175,6 +180,7 @@ def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         for fragment in fragments:
             if not isinstance(fragment, dict):
                 continue
+            wave_counter += 1
             actions = fragment.get("actions", [])
             if not isinstance(actions, list):
                 continue
@@ -187,7 +193,8 @@ def _spawn_sequence(level_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 if action_type != "SPAWN" or not enemy_key.startswith("enemy_"):
                     continue
                 spawns.append({
-                    "wave": wave_idx,
+                    "wave": wave_counter,
+                    "wave_pre_delay": float(fragment.get("preDelay", 0) or 0),
                     "enemy_id": enemy_key,
                     "enemy_name": _enemy_name(enemy_key),
                     "count": int(action.get("count", 1) or 1),
@@ -223,7 +230,7 @@ async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -
     for spawn in spawns:
         wave_num = spawn["wave"]
         if not waves or waves[-1]["wave"] != wave_num:
-            waves.append({"wave": wave_num, "spawns": []})
+            waves.append({"wave": wave_num, "wave_pre_delay": spawn["wave_pre_delay"], "spawns": []})
         waves[-1]["spawns"].append({
             "order": len(waves[-1]["spawns"]) + 1,
             "enemy_id": spawn["enemy_id"],
@@ -240,5 +247,5 @@ async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -
         "stage_name": stage_info.get("name", ""),
         "total_waves": len(waves),
         "waves": waves,
-        "note": "waves 按关卡数据文件顺序排列；pre_delay/interval 为关卡原始数据（秒），仅供参考",
+        "note": "波次按关卡数据中的 fragments 划分，按出现顺序排列；pre_delay/interval 为关卡原始数据（秒），仅供参考",
     }

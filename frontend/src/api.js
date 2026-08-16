@@ -1,5 +1,5 @@
 /* ================================================
-   ARKNIGHTS RAG - API CLIENT (Vue version)
+   ARKNIGHTS AGENT - API CLIENT (Vue version)
    ================================================ */
 
 // API base URL - using relative path for Vite proxy
@@ -264,7 +264,7 @@ export const api = {
     return response.json()
   },
 
-  // ===== AgenticRAG APIs =====
+  // ===== Agent APIs =====
 
   async createAgentSession() {
     const response = await fetch(`${API_BASE}/agent/session`, {

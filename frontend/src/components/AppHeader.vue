@@ -22,12 +22,12 @@ const emit = defineEmits(['toggle-sidebar'])
 const route = useRoute()
 
 const pageTitles = {
-  '/chat': '明日方舟 RAG 助手',
-  '/admin': 'Arknights RAG Admin',
+  '/chat': '明日方舟 Agent 助手',
+  '/admin': 'Arknights Agent Admin',
   '/graph': '知识图谱'
 }
 
-const pageTitle = computed(() => pageTitles[route.path] || 'Arknights RAG')
+const pageTitle = computed(() => pageTitles[route.path] || 'Arknights Agent')
 
 function openSettings() {
   window.dispatchEvent(new CustomEvent('open-settings'))

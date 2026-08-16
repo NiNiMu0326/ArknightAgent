@@ -90,10 +90,11 @@ def test_extracts_spawn_order_from_prts_data(tmp_path, monkeypatch):
 
     assert result["stage_name"] == "暴君"
     assert result["stage_id"] == "main_01-07"
-    assert result["total_waves"] == 1
+    assert result["total_waves"] == 2
     assert result["waves"][0]["spawns"][0]["enemy_name"] == "源石虫·α"
-    assert result["waves"][0]["spawns"][1]["enemy_name"] == "暴徒"
-    assert result["waves"][0]["spawns"][1]["count"] == 2
+    assert result["waves"][1]["spawns"][0]["enemy_name"] == "暴徒"
+    assert result["waves"][1]["spawns"][0]["count"] == 2
+    assert result["waves"][1]["wave"] == 2
 
 
 def test_stage_id_input_also_resolves(tmp_path, monkeypatch):
