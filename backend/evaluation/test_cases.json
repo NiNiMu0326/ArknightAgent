@@ -42,13 +42,6 @@
     "difficulty": "medium"
   },
   {
-    "id": 7,
-    "question": "阿米娅有哪些别名？",
-    "ground_truth": "阿米娅的别名包括：魔王、小小的魔王、异族的稚儿、异族的魔王、小兔子、温柔的孩子、娇小的卡特斯、新的魔王、我王、卡特斯女孩、文明的存续的继承者、巴别塔的领导者、阿米娅小姐、兔子小姐。",
-    "category": "operator_info",
-    "difficulty": "easy"
-  },
-  {
     "id": 8,
     "question": "阿米娅和霜星之间发生了什么？",
     "ground_truth": "阿米娅通过感知情感，理解了霜星内心深处的痛苦与愤怒，并试图用罗德岛的理念感化她。霜星在濒死之际将希望托付给阿米娅，阿米娅则将一种治疗霜冻的药物命名为霜星以作纪念。",
@@ -82,5 +75,663 @@
     "ground_truth": "237-1号展柜文物种别是普通级别敌人，攻击类型为近战物理，行动方式为地面。它是一种奇妙的宝石构装体，曾在博物馆供人参观。",
     "category": "enemy_info",
     "difficulty": "medium"
+  },
+  {
+    "id": 100,
+    "question": "银灰精英二满级时的攻击力是多少？",
+    "ground_truth": "银灰精英二满级面板为：生命上限 2560、攻击力 713、防御力 397、法术抗性 10。其中攻击力为 713。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 101,
+    "question": "能天使精英二满级时的攻击力是多少？",
+    "ground_truth": "能天使精英二满级面板为：生命上限 1673、攻击力 540、防御力 161、法术抗性 0。其中攻击力为 540。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 102,
+    "question": "史尔特尔精英二满级时的攻击力是多少？",
+    "ground_truth": "史尔特尔精英二满级面板为：生命上限 2916、攻击力 672、防御力 414、法术抗性 15。其中攻击力为 672。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 103,
+    "question": "艾雅法拉精英二满级时的攻击力是多少？",
+    "ground_truth": "艾雅法拉精英二满级面板为：生命上限 1743、攻击力 645、防御力 122、法术抗性 20。其中攻击力为 645。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 104,
+    "question": "陈精英二满级时的攻击力是多少？",
+    "ground_truth": "陈精英二满级面板为：生命上限 2880、攻击力 610、防御力 352、法术抗性 0。其中攻击力为 610。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 105,
+    "question": "推进之王精英二满级时的攻击力是多少？",
+    "ground_truth": "推进之王精英二满级面板为：生命上限 2251、攻击力 515、防御力 384、法术抗性 0。其中攻击力为 515。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 106,
+    "question": "凯尔希精英二满级时的攻击力是多少？",
+    "ground_truth": "凯尔希精英二满级面板为：生命上限 1633、攻击力 490、防御力 215、法术抗性 0。其中攻击力为 490。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 107,
+    "question": "阿米娅精英二满级时的攻击力是多少？",
+    "ground_truth": "阿米娅精英二满级面板为：生命上限 1480、攻击力 612、防御力 121、法术抗性 20。其中攻击力为 612。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 108,
+    "question": "塞雷娅精英二满级时的攻击力是多少？",
+    "ground_truth": "塞雷娅精英二满级面板为：生命上限 3150、攻击力 485、防御力 595、法术抗性 10。其中攻击力为 485。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 109,
+    "question": "闪灵精英二满级时的攻击力是多少？",
+    "ground_truth": "闪灵精英二满级面板为：生命上限 1613、攻击力 530、防御力 138、法术抗性 0。其中攻击力为 530。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 110,
+    "question": "星熊精英二满级时的攻击力是多少？",
+    "ground_truth": "星熊精英二满级面板为：生命上限 3850、攻击力 430、防御力 723、法术抗性 0。其中攻击力为 430。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 111,
+    "question": "安洁莉娜精英二满级时的攻击力是多少？",
+    "ground_truth": "安洁莉娜精英二满级面板为：生命上限 1385、攻击力 542、防御力 120、法术抗性 25。其中攻击力为 542。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 112,
+    "question": "伊芙利特精英二满级时的攻击力是多少？",
+    "ground_truth": "伊芙利特精英二满级面板为：生命上限 1680、攻击力 870、防御力 130、法术抗性 20。其中攻击力为 870。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 113,
+    "question": "斯卡蒂精英二满级时的攻击力是多少？",
+    "ground_truth": "斯卡蒂精英二满级面板为：生命上限 3866、攻击力 1015、防御力 263、法术抗性 0。其中攻击力为 1015。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 114,
+    "question": "泥岩精英二满级时的攻击力是多少？",
+    "ground_truth": "泥岩精英二满级面板为：生命上限 3928、攻击力 882、防御力 602、法术抗性 10。其中攻击力为 882。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 115,
+    "question": "银灰是几星干员，职业是什么？",
+    "ground_truth": "银灰是6星干员，职业为近卫，分支为领主。其所属势力为谢拉格,喀兰贸易，画师为竜崎いち。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 116,
+    "question": "能天使是几星干员，职业是什么？",
+    "ground_truth": "能天使是6星干员，职业为狙击，分支为速射手。其所属势力为炎-龙门,企鹅物流，画师为幻象黑兔。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 117,
+    "question": "史尔特尔是几星干员，职业是什么？",
+    "ground_truth": "史尔特尔是6星干员，职业为近卫，分支为术战者。其所属势力为罗德岛，画师为Ask。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 118,
+    "question": "艾雅法拉是几星干员，职业是什么？",
+    "ground_truth": "艾雅法拉是6星干员，职业为术师，分支为中坚术师。其所属势力为莱塔尼亚，画师为Anmi。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 119,
+    "question": "陈是几星干员，职业是什么？",
+    "ground_truth": "陈是6星干员，职业为近卫，分支为剑豪。其所属势力为炎-龙门,龙门近卫局，画师为唯@W。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 120,
+    "question": "推进之王是几星干员，职业是什么？",
+    "ground_truth": "推进之王是6星干员，职业为先锋，分支为尖兵。其所属势力为维多利亚,格拉斯哥帮，画师为Infukun。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 121,
+    "question": "凯尔希是几星干员，职业是什么？",
+    "ground_truth": "凯尔希是6星干员，职业为医疗，分支为医师。其所属势力为罗德岛，画师为唯@W。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 122,
+    "question": "阿米娅是几星干员，职业是什么？",
+    "ground_truth": "阿米娅是5星干员，职业为术师，分支为中坚术师。其所属势力为罗德岛，画师为唯@W。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 123,
+    "question": "塞雷娅是几星干员，职业是什么？",
+    "ground_truth": "塞雷娅是6星干员，职业为重装，分支为守护者。其所属势力为哥伦比亚,莱茵生命，画师为NoriZC。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 124,
+    "question": "闪灵是几星干员，职业是什么？",
+    "ground_truth": "闪灵是6星干员，职业为医疗，分支为医师。其所属势力为使徒，画师为竜崎いち。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 125,
+    "question": "星熊是几星干员，职业是什么？",
+    "ground_truth": "星熊是6星干员，职业为重装，分支为铁卫。其所属势力为炎-龙门,龙门近卫局，画师为Infukun。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 126,
+    "question": "安洁莉娜是几星干员，职业是什么？",
+    "ground_truth": "安洁莉娜是6星干员，职业为辅助，分支为凝滞师。其所属势力为叙拉古，画师为LM7。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 127,
+    "question": "伊芙利特是几星干员，职业是什么？",
+    "ground_truth": "伊芙利特是6星干员，职业为术师，分支为轰击术师。其所属势力为哥伦比亚,莱茵生命，画师为NoriZC。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 128,
+    "question": "斯卡蒂是几星干员，职业是什么？",
+    "ground_truth": "斯卡蒂是6星干员，职业为近卫，分支为无畏者。其所属势力为阿戈尔,深海猎人，画师为alchemaniac。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 129,
+    "question": "泥岩是几星干员，职业是什么？",
+    "ground_truth": "泥岩是6星干员，职业为重装，分支为不屈者。其所属势力为罗德岛，画师为m9nokuro。",
+    "category": "operator_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 130,
+    "question": "银灰有哪些技能？",
+    "ground_truth": "银灰拥有 3 个技能，依次为：强力击·γ型、雪境生存法则、真银斩。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 131,
+    "question": "能天使有哪些技能？",
+    "ground_truth": "能天使拥有 3 个技能，依次为：冲锋模式、扫射模式、过载模式。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 132,
+    "question": "史尔特尔有哪些技能？",
+    "ground_truth": "史尔特尔拥有 3 个技能，依次为：烈焰魔剑、熔核巨影、黄昏。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 133,
+    "question": "艾雅法拉有哪些技能？",
+    "ground_truth": "艾雅法拉拥有 3 个技能，依次为：二重咏唱、点燃、火山。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 134,
+    "question": "陈有哪些技能？",
+    "ground_truth": "陈拥有 3 个技能，依次为：鞘击、赤霄·拔刀、赤霄·绝影。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 135,
+    "question": "推进之王有哪些技能？",
+    "ground_truth": "推进之王拥有 3 个技能，依次为：冲锋号令·γ型、跃空锤、碎颅击。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 136,
+    "question": "凯尔希有哪些技能？",
+    "ground_truth": "凯尔希拥有 3 个技能，依次为：指令：结构加固、指令：战术协同、指令：熔毁。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 137,
+    "question": "阿米娅有哪些技能？",
+    "ground_truth": "阿米娅拥有 3 个技能，依次为：战术咏唱·γ型、精神爆发、奇美拉。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 138,
+    "question": "塞雷娅有哪些技能？",
+    "ground_truth": "塞雷娅拥有 3 个技能，依次为：急救、药物配置、钙质化。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 139,
+    "question": "闪灵有哪些技能？",
+    "ground_truth": "闪灵拥有 3 个技能，依次为：信条、自动掩护、教条力场。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 140,
+    "question": "星熊有哪些技能？",
+    "ground_truth": "星熊拥有 3 个技能，依次为：战意、荆棘、力之锯。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 141,
+    "question": "安洁莉娜有哪些技能？",
+    "ground_truth": "安洁莉娜拥有 3 个技能，依次为：秘杖·速充模式、秘杖·微粒模式、秘杖·反重力模式。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 142,
+    "question": "伊芙利特有哪些技能？",
+    "ground_truth": "伊芙利特拥有 3 个技能，依次为：狂热、炎爆、灼地。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 143,
+    "question": "斯卡蒂有哪些技能？",
+    "ground_truth": "斯卡蒂拥有 3 个技能，依次为：迅捷打击·γ型、跃浪击、涌潮悲歌。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 144,
+    "question": "泥岩有哪些技能？",
+    "ground_truth": "泥岩拥有 3 个技能，依次为：防御力强化·γ型、岩崩锤、秽壤的血脉。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 145,
+    "question": "银灰的天赋是什么？",
+    "ground_truth": "银灰的天赋为：领袖、鹰眼视觉。其中「领袖」在精英二阶段的效果为：攻击力+10%（潜能5：+2%），编入队伍时所有可部署单位的再部署时间-10%（潜能5：+2%）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 146,
+    "question": "能天使的天赋是什么？",
+    "ground_truth": "能天使的天赋为：快速弹匣、天使的祝福。其中「快速弹匣」在精英二阶段的效果为：攻击速度+12（潜能3：+3）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 147,
+    "question": "史尔特尔的天赋是什么？",
+    "ground_truth": "史尔特尔的天赋为：熔火、余烬。其中「熔火」在精英二阶段的效果为：无视攻击目标20（潜能5：+2）法术抗性",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 148,
+    "question": "艾雅法拉的天赋是什么？",
+    "ground_truth": "艾雅法拉的天赋为：炎息、乱火。其中「炎息」在精英二阶段的效果为：在场时，所有友方【术师】职业干员的攻击力+14%（潜能6：+2%）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 149,
+    "question": "陈的天赋是什么？",
+    "ground_truth": "陈的天赋为：呵斥、持刀格斗术。其中「呵斥」在精英二阶段的效果为：在场时每4秒回复全场友方角色1点攻击/受击技力",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 150,
+    "question": "推进之王的天赋是什么？",
+    "ground_truth": "推进之王的天赋为：万兽之王、粉碎。其中「万兽之王」在精英二阶段的效果为：在场时，所有【先锋】职业干员的攻击力和防御力各+8%（潜能5：+2%）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 151,
+    "question": "凯尔希的天赋是什么？",
+    "ground_truth": "凯尔希的天赋为：Mon3tr、不毁重构。其中「Mon3tr」在精英二阶段的效果为：可以使用并治疗Mon3tr，拥有25秒再部署时间，优先治疗自身和Mon3tr；Mon3tr不在凯尔希攻击范围内时防御力降至0",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 152,
+    "question": "阿米娅的天赋是什么？",
+    "ground_truth": "阿米娅的天赋为：？？？、情绪吸收。",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 153,
+    "question": "塞雷娅的天赋是什么？",
+    "ground_truth": "塞雷娅的天赋为：莱茵充能护服、精神回复。其中「莱茵充能护服」在精英二阶段的效果为：每在场上停留20秒，攻击力+5%（潜能5：+1%），防御力+4%（潜能5：+1%），最多叠加5层",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 154,
+    "question": "闪灵的天赋是什么？",
+    "ground_truth": "闪灵的天赋为：黑恶魔的庇护、法典。其中「黑恶魔的庇护」在精英二阶段的效果为：攻击范围内的友方单位防御力+60（潜能6：+5）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 155,
+    "question": "星熊的天赋是什么？",
+    "ground_truth": "星熊的天赋为：战术装甲、特种作战策略。其中「战术装甲」在精英二阶段的效果为：获得25%（潜能3：+3%）概率的伤害抵挡",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 156,
+    "question": "安洁莉娜的天赋是什么？",
+    "ground_truth": "安洁莉娜的天赋为：加速力场、兼职工作。其中「加速力场」在精英二阶段的效果为：在场时全场友方单位攻速+7（潜能6：+1）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 157,
+    "question": "伊芙利特的天赋是什么？",
+    "ground_truth": "伊芙利特的天赋为：精神融解、莱茵回路。其中「精神融解」在精英二阶段的效果为：攻击范围内的敌军法术抗性-40%（潜能3：+4%）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 158,
+    "question": "斯卡蒂的天赋是什么？",
+    "ground_truth": "斯卡蒂的天赋为：深海掠食者、迅捷出击。其中「深海掠食者」在精英二阶段的效果为：编入队伍时，所有【深海猎人】干员的攻击力+14%（潜能5：+2%）",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 159,
+    "question": "泥岩的天赋是什么？",
+    "ground_truth": "泥岩的天赋为：沃土予身、手足相惜。其中「沃土予身」在精英二阶段的效果为：每9秒获得1层护盾（最多3层，部署后立即获得1层），每层护盾破裂时恢复自身20%（潜能5：+2%）最大生命",
+    "category": "operator_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 160,
+    "question": "爱国者这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "爱国者的地位级别为领袖，攻击类型为近战 物理，行动方式为地面。其基础属性为：最大生命值 45000、攻击力 1600、防御力 500、法术抗性 45。能力：大幅强化敌军攻击与防御力行军姿态；攻击力提升，防御力与法术抗性大幅提升，使自身极容易受到我方攻击，普通攻击为4连击；生命值降为0后，进入重生阶段，期间持续对周围造成真实伤害，一段时间后切换至毁灭姿态毁灭姿态；能够远程攻击；对最远的高台单位投掷长枪造成物理伤害；持续对周围造成真实伤害；免疫眩晕，免疫冻结，免疫浮空",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 161,
+    "question": "霜星这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "霜星的地位级别为领袖，攻击类型为远程 法术，行动方式为地面。其基础属性为：最大生命值 25000、攻击力 420、防御力 250、法术抗性 50。能力：常使用冰环法术，能对周围的我方单位造成大量法术伤害，并在数秒内降低击中目标的攻击速度；会使用法术冻结地面，使其永久无法被部署单位；首次死亡后重生，重生后攻击力提升",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 162,
+    "question": "浮士德这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "浮士德的地位级别为领袖，攻击类型为远程 物理，行动方式为地面。其基础属性为：最大生命值 37000、攻击力 1000、防御力 350、法术抗性 35。能力：无法被阻挡且登场时一段时间内无敌；会释放能使攻击力加倍的特殊弩箭；每隔一段时间会召唤战场中隐藏的弩炮台",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 163,
+    "question": "梅菲斯特这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "梅菲斯特的地位级别为领袖，攻击类型为不攻击 治疗，行动方式为地面。其基础属性为：最大生命值 28000、攻击力 500、防御力 200、法术抗性 60。能力：全场的敌方单位的自然生命回复速度加倍；普通攻击能够同时治疗3名敌方单位",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 164,
+    "question": "碎骨这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "碎骨的地位级别为领袖，攻击类型为近战 远程 物理，行动方式为地面。其基础属性为：最大生命值 10500、攻击力 1000、防御力 150、法术抗性 30。能力：未被阻挡时会发射榴弹，击中目标及其周围单位使其防御力在短时间内大幅度下降；生命值降至一半以下时攻击力大幅度提升",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 165,
+    "question": "塔露拉这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "塔露拉的地位级别为领袖，攻击类型为近战 远程 物理，行动方式为地面。其基础属性为：最大生命值 50000、攻击力 1500、防御力 700、法术抗性 50。能力：【日冕】对范围内所有我方单位造成法术伤害；【烈焚灼息】使场上一名我方单位持续受到逐渐递增的真实伤害（每秒造成真实伤害，可被抵抗 抵抗晕眩、寒冷、冻结等负面状态的持续时间减半，麻痹等效果每5秒流失1层（同名效果不叠加）",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 166,
+    "question": "大鲍勃这个敌人的地位级别和攻击类型是什么？生命值是多少？",
+    "ground_truth": "大鲍勃的地位级别为领袖，攻击类型为近战 物理，行动方式为地面。其基础属性为：最大生命值 22000、攻击力 1900、防御力 800、法术抗性 30。",
+    "category": "enemy_info",
+    "difficulty": "medium"
+  },
+  {
+    "id": 167,
+    "question": "爱国者是什么样的敌人？",
+    "ground_truth": "爱国者是萨卡兹类、领袖级别的敌人，攻击类型为近战 物理。年久失修的铠甲多处破损，曾经坚锐的巨戟锋蚀刃锈。但爱国者永不动摇，绝不退缩，从不怜悯。他与命运较量许久，他要割开命运的咽喉。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 168,
+    "question": "霜星是什么样的敌人？",
+    "ground_truth": "霜星是—类、领袖级别的敌人，攻击类型为远程 法术。整合运动法术部队干部，以术师身份参与整合运动，少数能在正面战场以压倒性的法术进行攻击的敌方目标。指挥的队伍中有一支名为“雪怪”的特殊术师小队参与一些特别行动。和她名字一样，给人一种冰冷的感觉。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 169,
+    "question": "浮士德是什么样的敌人？",
+    "ground_truth": "浮士德是—类、领袖级别的敌人，攻击类型为远程 物理。整合运动干部，以狙击手身份参与整合运动，通常与梅菲斯特一同行动。能以超远距离的物理攻击对我方造成威胁。有些时候会使用特别的方式召唤类似弩炮的机关进行偷袭，或使用高破坏力的弩箭攻击。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 170,
+    "question": "梅菲斯特是什么样的敌人？",
+    "ground_truth": "梅菲斯特是—类、领袖级别的敌人，攻击类型为不攻击 治疗。整合运动干部，以医疗术师身份参与整合运动，通常与浮士德一同行动。指挥其麾下部队进行攻击，而他则负责治疗，并能够提升宿主单位的生命恢复速度。拥有很高的法术抵抗力。目前能判明他就是那些宿主的控制者。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 171,
+    "question": "碎骨是什么样的敌人？",
+    "ground_truth": "碎骨是—类、领袖级别的敌人，攻击类型为近战 远程 物理。整合运动突击部队干部，手持有源石爆破物及其发射器，但报告说其行动能力优秀，在近身作战中仍有巨大威胁。在龙门外环区域被多次目击。有情报显示他正在参与该区域的某项特殊行动。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 172,
+    "question": "塔露拉是什么样的敌人？",
+    "ground_truth": "塔露拉是—类、领袖级别的敌人，攻击类型为近战 远程 物理。整合运动领导者，同时也是整合运动的发言人。目前判定为诸多动乱事件的幕后主使，是造成切尔诺伯格被毁事件的主谋。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 173,
+    "question": "大鲍勃是什么样的敌人？",
+    "ground_truth": "大鲍勃是—类、领袖级别的敌人，攻击类型为近战 物理。整合运动干部。穿着沉重的防爆护具，且使用电锯进行攻击。出现在一些不起眼的作战地区，似乎默默参与了一些周边行动，拥有丰富的作战和指挥经验。造成大量破坏的同时极难被击溃，需要特别注意。",
+    "category": "enemy_info",
+    "difficulty": "easy"
+  },
+  {
+    "id": 174,
+    "question": "格拉尼属于哪个组织或势力？",
+    "ground_truth": "格拉尼与罗德岛属于「所属」关系。格拉尼是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 175,
+    "question": "斯卡蒂属于哪个组织或势力？",
+    "ground_truth": "斯卡蒂与罗德岛属于「所属」关系。斯卡蒂是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 176,
+    "question": "凯尔希属于哪个组织或势力？",
+    "ground_truth": "凯尔希与罗德岛属于「所属」关系。凯尔希是罗德岛的指挥官",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 177,
+    "question": "凛冬属于哪个组织或势力？",
+    "ground_truth": "凛冬与罗德岛属于「所属」关系。凛冬是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 178,
+    "question": "梅菲斯特属于哪个组织或势力？",
+    "ground_truth": "梅菲斯特与整合运动属于「所属」关系。梅菲斯特是整合运动的干部之一",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 179,
+    "question": "阿米娅属于哪个组织或势力？",
+    "ground_truth": "阿米娅与罗德岛属于「所属」关系。阿米娅是罗德岛的领导者",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 180,
+    "question": "博士属于哪个组织或势力？",
+    "ground_truth": "博士与罗德岛属于「所属」关系。博士是罗德岛的指挥官",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 181,
+    "question": "苏茜属于哪个组织或势力？",
+    "ground_truth": "苏茜与罗德岛属于「所属」关系。苏茜加入了罗德岛",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 182,
+    "question": "夏栎属于哪个组织或势力？",
+    "ground_truth": "夏栎与罗德岛属于「所属」关系。夏栎是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 183,
+    "question": "苦根属于哪个组织或势力？",
+    "ground_truth": "苦根与罗德岛属于「所属」关系。苦根是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 184,
+    "question": "亚叶属于哪个组织或势力？",
+    "ground_truth": "亚叶与罗德岛属于「所属」关系。亚叶是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 185,
+    "question": "铃兰属于哪个组织或势力？",
+    "ground_truth": "铃兰与罗德岛属于「所属」关系。铃兰是罗德岛的干员",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 186,
+    "question": "阿米娅在罗德岛担任什么职务？",
+    "ground_truth": "阿米娅是罗德岛的公开领袖。她出身于雷姆必拓，是卡特斯/奇美拉感染者，自幼在巴别塔长大，是特蕾西娅临终前托付「文明的存续」（黑王冠）的继承者，成为萨卡兹的新一任「魔王」。博士失忆苏醒后，阿米娅作为罗德岛的核心领导，带领组织在泰拉大陆各方势力间斡旋，致力于治愈矿石病、弥合感染者与普通人之间的仇恨。",
+    "category": "relationship",
+    "difficulty": "easy"
+  },
+  {
+    "id": 187,
+    "question": "斯卡蒂为什么加入罗德岛？",
+    "ground_truth": "斯卡蒂是来自阿戈尔的深海猎人，在陆地上以赏金猎人身份行动。她曾长期自我孤立，认为自己的存在会给身边的人带来灾祸；加入罗德岛后逐渐与其他干员建立联系，并在寻找昔日战友幽灵鲨的过程中，揭示了深海猎人与海嗣之间不为人知的联系。",
+    "category": "relationship",
+    "difficulty": "hard"
+  },
+  {
+    "id": 188,
+    "question": "格拉尼在罗德岛是什么身份？",
+    "ground_truth": "格拉尼是罗德岛的先锋干员。她出身维多利亚，是库兰塔族女性，曾是一名正直热情的骑警；因不愿向腐败和不公低头而失去原本身份，但始终坚持信念，以手中长枪守护弱者，凭借出色的机动性和坚韧意志活跃在各种任务中。",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 189,
+    "question": "歌蕾蒂娅与罗德岛是什么关系？",
+    "ground_truth": "歌蕾蒂娅现与罗德岛建立合作关系，担任罗德岛的阿戈尔事务负责人，同时领导幸存的深海猎人。她来自深海文明阿戈尔，曾任阿戈尔技术执政官和深海猎人总战争设计师之一。",
+    "category": "relationship",
+    "difficulty": "hard"
+  },
+  {
+    "id": 190,
+    "question": "暴行和罗德岛有什么关系？",
+    "ground_truth": "暴行本名夏洛特，来自雷姆必拓的卡特斯族女性干员，在罗德岛担任近卫干员。巴别塔时期她曾作为旅伴陪伴博士和阿米娅，与阿米娅建立深厚友谊；回到雷姆必拓后因家乡矿难再次接触罗德岛，得知阿米娅是罗德岛领袖后，怀着保护朋友和守护家乡的决心加入罗德岛。",
+    "category": "relationship",
+    "difficulty": "medium"
+  },
+  {
+    "id": 191,
+    "question": "「骑兵与猎人」这段剧情讲了什么？",
+    "ground_truth": "故事始于卡西米尔一处偏远村庄滴水村，因流传「骑士宝藏」传说吸引大量赏金猎人，村庄被搅得不得安宁。村民的委托信最终落到罗德岛干员、前骑警格拉尼手中。格拉尼抵达时村子已被赏金猎人破坏，村长可萝尔被严刑拷打追问宝藏下落，格拉尼及时出手击退赏金猎人救下可萝尔。",
+    "category": "story_character",
+    "difficulty": "hard"
+  },
+  {
+    "id": 192,
+    "question": "「自有一派」这段剧情的核心内容是什么？",
+    "ground_truth": "剧情围绕雷姆必拓矿业公司驻罗德岛办事处的干员暴行，以及她与阿米娅、博士等人的互动展开。故事始于阿米娅因博士、凯尔希和特蕾西娅外出而感到无聊，前来寻找暴行，暴行提议教阿米娅制作雷姆必拓特色美食胡萝卜派，两人在温馨氛围中准备食材。",
+    "category": "story_character",
+    "difficulty": "medium"
+  },
+  {
+    "id": 193,
+    "question": "「阴云火花」这段剧情发生在哪里，讲了什么？",
+    "ground_truth": "故事主要围绕卡拉顿这座维多利亚城市的感染者社区展开，通过几条并行线索揭示底层人们的困境、少数理想主义者的努力以及城市光鲜之下的腐败与阴谋。故事始于感染者少女苏茜在「绿意火花」小店做工的生活——这家店是她在感染者社区中难得的温暖港湾，也是她多年攒钱希望买下的梦想之地。",
+    "category": "story_character",
+    "difficulty": "hard"
   }
 ]

@@ -343,7 +343,58 @@ python -m pytest test -q
 npm test -- --run
 ```
 
-当前分支已验证：后端 654 passed / 7 skipped，前端 117 passed，`npm run build` 成功。
+当前分支已验证：后端 702 collected（695 passed / 7 skipped），前端 118 passed，`npm run build` 成功。
+
+## RAG 评测
+
+基于 [RAGAS](https://docs.ragas.io/) 对 `arknights_rag_search` 的检索质量做量化评估，评测集与评测历史均在版本控制内。
+
+```bash
+# 跑评测（默认 LLM 指标：context_precision / context_recall）
+python backend/evaluation/rag_eval.py
+
+# 同时生成回答，加测 faithfulness / answer_relevancy
+python backend/evaluation/rag_eval.py --with-answer --tag "基线"
+
+# 换检索参数做对照实验
+python backend/evaluation/rag_eval.py --top-k 8 --tag "top_n=8"
+python backend/evaluation/rag_eval.py --search-mode precise --tag "precise"
+```
+
+### 评测集
+
+`backend/evaluation/test_cases.json` — **105 条**，覆盖 5 类问题：
+
+| 类别 | 条数 | 说明 |
+| --- | --- | --- |
+| operator_info | 63 | 干员星级/职业/面板/技能/天赋 |
+| relationship | 21 | 干员与组织、角色之间的关系 |
+| enemy_info | 16 | 敌人级别/攻击类型/属性/背景 |
+| story_character | 4 | 剧情事件与角色经历 |
+| basic_stats | 1 | 全局统计口径 |
+
+难度分布：easy 42 / medium 56 / hard 7。
+
+**用例的 ground_truth 全部由数据源派生**，可用 `gen_test_cases.py` 重新生成：
+
+```bash
+# 从 data/ 与知识图谱重新生成候选（答案自动派生，不手工编写）
+python backend/evaluation/gen_test_cases.py --out /tmp/candidates.json
+
+# 逐条走真实混合检索链路，验证答案确实可被召回（不可召回的用例对评测无意义）
+python backend/evaluation/verify_test_cases.py --candidates /tmp/candidates.json --concurrency 2 --out /tmp/verify.json
+
+# 合并验证结果并写入 test_cases.json
+python backend/evaluation/merge_test_cases.py --verify /tmp/verify.json --recheck "..."
+```
+
+> 注意：`verify_test_cases.py` 并发调 SiliconFlow 重排接口会触发 429 限流，
+> 导致用例被误判为「不可召回」（表现为 0 命中）。脚本已内置退避重试，
+> 若仍出现整条 0 命中，请把并发降到 1~2 复检，不要直接判定为检索失败。
+
+### 评测历史
+
+每轮评测结果写入 `backend/evaluation/results/`（CSV + JSON），并在 `eval_history.jsonl` 追加一行汇总，便于对比不同参数配置的效果。
 
 ## 复现示例
 
