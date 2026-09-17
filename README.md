@@ -396,6 +396,34 @@ python backend/evaluation/merge_test_cases.py --verify /tmp/verify.json --rechec
 
 每轮评测结果写入 `backend/evaluation/results/`（CSV + JSON），并在 `eval_history.jsonl` 追加一行汇总，便于对比不同参数配置的效果。
 
+**当前基线（105 条 / balanced / top_k=5）**：
+
+| 指标 | 得分 |
+| --- | --- |
+| context_precision | 0.846 |
+| context_recall | 0.937 |
+| faithfulness | 0.985 |
+| answer_relevancy | 0.847 |
+
+分类别看，`operator_info` 最强（faithfulness 0.995），`enemy_info` 的 answer_relevancy 偏低（0.741），`story_character` 的 context_recall 只有 0.750 —— 剧情类问题的检索召回是最明确的短板。
+
+> **踩坑记录：回答生成的两个静默失败模式**
+>
+> 1. **`max_tokens` 是「思考 + 可见回答」的总预算。** `deepseek-v4-flash` 是思考模型，
+>    复杂问题（剧情、跨文档关系）的 `reasoning_content` 可能吃掉全部预算，导致
+>    `finish_reason=length` 且 `content` 为空字符串。原先设为 1024 时，
+>    这类问题**稳定**生成失败（重试也没用），现改为 8192 并显式检测 `finish_reason`。
+> 2. **生成失败时回退成 `ground_truth` 作答会让 faithfulness / answer_relevancy 虚高**
+>    （回答与参考答案完全一致）。`build_dataset` 现在会打印警告并列出受影响的用例。
+>
+> 针对已跑完的批次，可用 `fix_eval_cases.py` 只重算问题用例，无需整轮重跑：
+>
+> ```bash
+> python backend/evaluation/fix_eval_cases.py \
+>     --result backend/evaluation/results/rag_eval_xxx.csv \
+>     --out    backend/evaluation/results/rag_eval_xxx_fixed.csv
+> ```
+
 ## 复现示例
 
 以下问题可用于验证系统功能：

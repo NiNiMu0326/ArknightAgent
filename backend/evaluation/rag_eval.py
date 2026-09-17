@@ -1,4 +1,4 @@
-﻿"""
+"""
 RAG 检索质量评估脚本。
 使用 RAGAS 框架评估 arknights_rag_search 工具的检索效果。
 
@@ -94,24 +94,47 @@ async def generate_answer(question: str, contexts: List[str], model: str = "deep
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 1024,
+        # 注意：deepseek-v4-flash 是思考模型，max_tokens 是「思考 + 可见回答」的
+        # 总预算。若设得过小（如 1024），复杂问题的 reasoning 会吃光全部预算，
+        # 导致 finish_reason=length 且 content 为空字符串。因此给足余量。
+        "max_tokens": 8192,
         "stream": False,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{config.DEEPSEEK_BASE_URL}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"Answer generation failed: {e}")
-        return ""
+    # 重试：评测跑上百条时，DeepSeek 偶发超时/限流/空响应。若直接返回空串，
+    # build_dataset 会静默回退成 ground_truth 当回答，导致 faithfulness /
+    # answer_relevancy 被虚高（回答与参考答案完全一致）。因此这里必须重试。
+    last_err = None
+    for attempt in range(4):
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    f"{config.DEEPSEEK_BASE_URL}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                choice = data["choices"][0]
+                content = (choice["message"].get("content") or "").strip()
+                finish = choice.get("finish_reason")
+                # finish_reason=length 说明思考过程吃光了 max_tokens 预算，
+                # 此时 content 往往为空——必须重试而不是当作"回答了"。
+                if finish == "length":
+                    last_err = f"输出被截断(finish_reason=length), 可见回答 {len(content)} 字"
+                # 截断检测：偶发会返回极短的残句（实测出现过仅 4 字的
+                # "大鲍勃是"），这种回答会被判 faithfulness=0，必须重试。
+                elif len(content) >= 10 and not content.endswith(("是", "为", "的", "：", ":", "，", ",")):
+                    return content
+                else:
+                    last_err = f"内容过短或疑似截断: {content[:30]!r}"
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+        await asyncio.sleep(2 * (attempt + 1))
+
+    logger.error(f"Answer generation failed after retries: {last_err}")
+    return ""
 
 
 async def retrieve_contexts(question: str, top_k: int = 5, search_mode: str = "balanced", enable_parent_expansion: bool = True) -> List[str]:
@@ -205,7 +228,8 @@ def run_evaluation_with_llm(dataset, include_answer_metrics: bool = False):
 async def build_dataset(test_cases: List[Dict], top_k: int = 5, search_mode: str = "balanced",
                         use_reference_contexts: bool = False,
                         with_answer: bool = False,
-                        enable_parent_expansion: bool = True):
+                        enable_parent_expansion: bool = True,
+                        precomputed_answers: Optional[Dict[str, str]] = None):
     """\u6784\u5efa RAGAS \u8bc4\u4f30\u6570\u636e\u96c6\u3002
 
     RAGAS 0.4.x \u65e7\u7248\u63a5\u53e3\u5217\u540d:
@@ -224,6 +248,7 @@ async def build_dataset(test_cases: List[Dict], top_k: int = 5, search_mode: str
     responses = []
     categories = []
     skipped = 0
+    fallback_cases: List[str] = []
 
     for i, tc in enumerate(test_cases):
         q = tc["question"]
@@ -252,13 +277,25 @@ async def build_dataset(test_cases: List[Dict], top_k: int = 5, search_mode: str
         # Generate answer if needed
         if with_answer:
             logger.info(f"  -> \u751f\u6210\u56de\u7b54...")
-            answer = await generate_answer(q, contexts)
+            answer = (precomputed_answers or {}).get(q) or await generate_answer(q, contexts)
             if answer:
                 responses.append(answer)
                 logger.info(f"  -> \u56de\u7b54\u957f\u5ea6: {len(answer)} \u5b57")
             else:
-                responses.append(gt)  # fallback to ground_truth
+                # 回退会把 ground_truth 当作回答，使 faithfulness /
+                # answer_relevancy 虚高（回答与参考答案完全一致）。
+                # 因此显式记录，并在结果里提示这些指标不可信。
+                responses.append(gt)
+                fallback_cases.append(q)
                 logger.warning(f"  -> \u56de\u7b54\u751f\u6210\u5931\u8d25\uff0c\u4f7f\u7528 ground_truth \u66ff\u4ee3")
+
+    if fallback_cases:
+        logger.warning(
+            f"[WARN] {len(fallback_cases)} \u6761\u7528\u4f8b\u56de\u9000\u4e3a ground_truth \u4f5c\u7b54\uff0c"
+            f"faithfulness / answer_relevancy \u4f1a\u88ab\u865a\u9ad8\uff0c\u8bf7\u91cd\u8dd1\u6216\u5254\u9664\u540e\u518d\u770b\u8fd9\u4e24\u9879"
+        )
+        for q in fallback_cases:
+            logger.warning(f"    - {q}")
 
     if not questions:
         logger.error("\u6240\u6709\u6d4b\u8bd5\u7528\u4f8b\u5747\u65e0\u68c0\u7d22\u7ed3\u679c, \u65e0\u6cd5\u8bc4\u4f30")
