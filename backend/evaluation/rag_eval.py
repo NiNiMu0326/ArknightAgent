@@ -37,20 +37,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # ===== Judge LLM 模型配置 (按优先级排列，限速时自动切换) =====
+# API Key 从环境变量读取，不要硬编码到代码里！
+# 在 backend/.env 中配置 RAGAS_DEEPSEEK_API_KEY / RAGAS_MIMO_API_KEY
 JUDGE_MODELS = [
     {
         "model": "deepseek-v4-flash",
         "base_url": "https://api.deepseek.com",
-        "api_key": "sk-0ec8deb73a9144039d91d14379e6e1eb",
+        "api_key": os.environ.get("RAGAS_DEEPSEEK_API_KEY", ""),
         "name": "DeepSeek-v4-flash (primary)",
     },
     {
         "model": "mimo-v2.5-pro",
         "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
-        "api_key": "tp-clbnjho0uigusuqsio3iok408b0lzgg7gv7kp2xmrww91378",
+        "api_key": os.environ.get("RAGAS_MIMO_API_KEY", ""),
         "name": "MiMo-v2.5-pro (backup)",
     },
 ]
+JUDGE_MODELS = [m for m in JUDGE_MODELS if m["api_key"]]
+if not JUDGE_MODELS:
+    logger.warning("未配置任何 judge 模型 API Key (RAGAS_DEEPSEEK_API_KEY / RAGAS_MIMO_API_KEY)")
 
 
 async def generate_answer(question: str, contexts: List[str], model: str = "deepseek-v4-flash") -> str:
