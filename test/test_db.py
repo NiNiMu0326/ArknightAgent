@@ -243,4 +243,15 @@ class TestDbPath:
         assert db.DB_PATH.parent.exists()
 
     def test_db_path_parent_is_data_dir(self):
-        assert db.DB_PATH.parent == BASE_DIR / "data"
+        """生产配置下 DB_PATH 必须落在 <repo>/data/。
+
+        注意：conftest.py 会在测试期把 backend.db.DB_PATH 覆盖为临时库（避免测试污染本地
+        开发数据），所以这里不能直接断言当前生效值，改为反推源码中声明的默认值。
+        """
+        import re
+
+        source = Path(db.__file__).read_text(encoding="utf-8")
+        default_expr = re.search(r"^DB_PATH\s*=\s*(.+)$", source, re.MULTILINE).group(1)
+        declared = eval(default_expr, {"Path": Path, "__file__": db.__file__})  # noqa: S307
+        assert declared.parent == BASE_DIR / "data"
+        assert declared.name == "arknights_rag.db"

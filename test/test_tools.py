@@ -3,6 +3,7 @@ Tests for backend.agent.tools: ToolRegistry and tool schemas.
 Usage: cd test && python -m pytest test_tools.py -v
 """
 import sys
+import time
 import pytest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -310,3 +311,132 @@ class TestToolRegistryEdgeCases:
 
         import asyncio
         asyncio.run(_test())
+
+
+# ============================================================
+# T27-①: 并发首次调用 get_tool_registry()
+# ============================================================
+
+class TestGlobalRegistryConcurrency:
+    """防的回归：旧实现先 `_registry = ToolRegistry()` 再注册默认工具，
+    并发首次调用时其他线程会看到「非 None 但零 executor」的半成品，
+    execute() 直接抛 Unknown tool —— 表现为服务启动初期随机丢工具。
+    """
+
+    REQUIRED_TOOLS = (
+        "arknights_rag_search",
+        "arknights_graphrag_search",
+        "web_search",
+        "arknights_structured_query",
+        "arknights_stage_waves",
+    )
+
+    def test_concurrent_first_call_returns_one_fully_initialized_registry(self, monkeypatch):
+        import asyncio
+        import threading
+
+        import backend.agent.tools as tools_module
+
+        # 强制走「首次初始化」路径，并把初始化窗口拉长，保证并发线程必然撞上
+        monkeypatch.setattr(tools_module, "_registry", None)
+        real_register = tools_module._register_default_tools
+
+        def slow_register(registry):
+            time.sleep(0.2)
+            real_register(registry)
+
+        monkeypatch.setattr(tools_module, "_register_default_tools", slow_register)
+
+        results, errors = [], []
+        barrier = threading.Barrier(8, timeout=10)
+
+        def worker():
+            try:
+                barrier.wait()
+                registry = get_tool_registry()
+                # 拿到实例后「立刻」自检：半成品只在初始化窗口内可见，
+                # 等所有线程 join 完再看 _tools 已经太晚（注册表是同一个可变对象）
+                missing = tuple(n for n in self.REQUIRED_TOOLS if registry._tools.get(n) is None)
+                results.append((registry, missing))
+            except Exception as exc:      # noqa: BLE001 - 线程内异常带回主线程断言
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert errors == []
+        assert len(results) == 8
+        assert [missing for _, missing in results] == [()] * 8, \
+            f"并发首次调用拿到了半成品注册表（缺 executor）：{results}"
+        registries = [r for r, _ in results]
+        assert len({id(r) for r in registries}) == 1, "并发首次调用拿到了不同的注册表实例"
+
+        registry = registries[0]
+        for name in self.REQUIRED_TOOLS:
+            assert registry._tools.get(name) is not None, f"半成品注册表：缺少 executor {name}"
+
+        # 拿到的实例必须真的能执行（而不是只有 _tools 字典恰好非空）
+        result = asyncio.run(registry.execute("arknights_structured_query", {"sql": ""}))
+        assert isinstance(result, dict)
+
+
+# ============================================================
+# T27-②③: register_schema / get_schemas 的内部状态隔离
+# ============================================================
+
+class TestToolRegistryIsolation:
+    def test_register_schema_rejects_builtin_tool_name(self):
+        """防的回归：MCP 动态 schema 与内置工具重名后，get_schemas() 会返回两个
+        同名 function，DeepSeek/OpenAI 接口直接 400，整轮对话不可用。"""
+        registry = ToolRegistry()
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "arknights_rag_search",
+                "description": "冒名顶替",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        with pytest.raises(ValueError, match="重名"):
+            registry.register_schema(schema)
+
+        # 拒绝后内部状态必须完全不变（不能留下半个 schema）
+        assert registry._dynamic_schemas == []
+        assert len(registry.get_schemas()) == len(TOOL_SCHEMAS)
+
+    @pytest.mark.parametrize("builtin_name", [s["function"]["name"] for s in TOOL_SCHEMAS])
+    def test_register_schema_rejects_every_builtin_name(self, builtin_name):
+        registry = ToolRegistry()
+        with pytest.raises(ValueError):
+            registry.register_schema({"function": {"name": builtin_name}})
+
+    def test_get_schemas_returns_deep_copy(self):
+        """防的回归：调用方就地改写返回值（补 id、规范化 parameters）会污染模块级
+        TOOL_SCHEMAS，后续所有请求都带上被改坏的 schema。"""
+        registry = ToolRegistry()
+        registry.register_schema({
+            "type": "function",
+            "function": {"name": "mcp__extra", "description": "original",
+                         "parameters": {"type": "object", "properties": {}}},
+        })
+
+        schemas = registry.get_schemas()
+        schemas[0]["function"]["name"] = "hacked"
+        schemas[0]["function"]["parameters"]["properties"]["query"] = {"type": "integer"}
+        schemas[-1]["function"]["description"] = "hacked"
+        schemas.append({"type": "function", "function": {"name": "injected"}})
+
+        fresh = registry.get_schemas()
+        assert fresh[0]["function"]["name"] == "arknights_rag_search"
+        assert fresh[0]["function"]["parameters"]["properties"]["query"]["type"] == "string"
+        assert [s["function"]["name"] for s in fresh if s["function"]["name"] == "mcp__extra"]
+        assert fresh[-1]["function"]["description"] == "original"
+        assert len(fresh) == len(TOOL_SCHEMAS) + 1
+        # 模块级静态 schema 也未被污染
+        assert TOOL_SCHEMAS[0]["function"]["name"] == "arknights_rag_search"
+        assert "query" in TOOL_SCHEMAS[0]["function"]["parameters"]["properties"]
+        assert TOOL_SCHEMAS[0]["function"]["parameters"]["properties"]["query"]["type"] == "string"

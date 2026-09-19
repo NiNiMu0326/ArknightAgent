@@ -42,22 +42,41 @@ class TestGetGraphBuilder:
             mock_build.assert_called_once()
 
     def test_filenotfound_does_not_crash(self):
-        """If entity_relations.json is missing, get_graph_builder warns but doesn't crash."""
+        """Missing entity_relations.json warns but does not crash.
+
+        The contract is ``None``, not a half-built builder: ``builder.graph`` is
+        an empty DiGraph in that case, and returning it made callers' null-guards
+        useless and turned "graph never loaded" into a silent "no relations".
+        """
         query._graph_builder_instance = None
 
-        with mock.patch.object(query.GraphBuilder, 'build', side_effect=FileNotFoundError):
+        with mock.patch.object(
+            query.GraphBuilder, 'build', side_effect=FileNotFoundError
+        ) as mock_build:
             with pytest.warns(UserWarning, match="entity_relations.json not found"):
                 gb = query.get_graph_builder()
-            assert gb is not None
+            assert gb is None
+            # A failed build must not be cached as the singleton
+            assert query._graph_builder_instance is None
+            # ... so the next call retries instead of being permanently degraded
+            with pytest.warns(UserWarning, match="entity_relations.json not found"):
+                assert query.get_graph_builder() is None
+            assert mock_build.call_count == 2
 
     def test_generic_exception_does_not_crash(self):
-        """Other build errors should warn but not crash."""
+        """Other build errors should warn but not crash, and return None."""
         query._graph_builder_instance = None
 
-        with mock.patch.object(query.GraphBuilder, 'build', side_effect=RuntimeError("test error")):
+        with mock.patch.object(
+            query.GraphBuilder, 'build', side_effect=RuntimeError("test error")
+        ) as mock_build:
             with pytest.warns(UserWarning, match="Failed to build GraphRAG"):
                 gb = query.get_graph_builder()
-            assert gb is not None
+            assert gb is None
+            assert query._graph_builder_instance is None
+            with pytest.warns(UserWarning, match="Failed to build GraphRAG"):
+                assert query.get_graph_builder() is None
+            assert mock_build.call_count == 2
 
     def test_thread_safety_lock_exists(self):
         """The module should have a threading.Lock for thread safety."""

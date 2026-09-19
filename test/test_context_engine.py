@@ -310,20 +310,37 @@ class TestAgentChatRestore:
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
         asyncio.run(db.init_db())
 
+    def _register_and_login(self, account):
+        """在临时库里注册并登录，返回 /agent/* 需要的 Authorization 头。"""
+        import backend.main as main_module
+        from httpx import AsyncClient, ASGITransport
+
+        async def _auth():
+            transport = ASGITransport(app=main_module.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                await ac.post("/auth/register", json={
+                    "account": account,
+                    "username": account,
+                    "password": "Abc12345",
+                })
+                return await ac.post("/auth/login", json={
+                    "account": account,
+                    "password": "Abc12345",
+                })
+
+        resp = asyncio.run(_auth())
+        assert resp.status_code == 200, resp.text
+        return {"Authorization": f"Bearer {resp.json()['token']}"}
+
     def test_restored_session_reuses_id_without_new_header(self, tmp_path, monkeypatch):
         import backend.main as main_module
         from httpx import AsyncClient, ASGITransport
 
         self._init_temp_db(tmp_path, monkeypatch)
+        # /agent/chat 需要登录，且会话归属决定恢复路径是否放行
+        headers = self._register_and_login("restoreuser")
+
         sm = SessionManager()
-        s = Session(
-            session_id="api-restore",
-            messages=[
-                {"role": "user", "content": "旧问题"},
-                {"role": "assistant", "content": "旧回答"},
-            ],
-        )
-        asyncio.run(sm.persist_session(s))
         monkeypatch.setattr(main_module, "_session_manager", sm)
 
         async def dummy_agent_loop(session_id, user_message, session_manager, model_id=None, max_rounds=15):
@@ -331,25 +348,79 @@ class TestAgentChatRestore:
 
         monkeypatch.setattr(main_module, "agent_loop", dummy_agent_loop)
 
+        async def _prepare():
+            """同一个登录用户先建立带历史消息的会话（归属随创建登记）。"""
+            transport = ASGITransport(app=main_module.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                created = await ac.post("/agent/session", headers=headers)
+                assert created.status_code == 200, created.text
+                sid = created.json()["session_id"]
+            session = await sm.get_session(sid)
+            session.messages.extend([
+                {"role": "user", "content": "旧问题"},
+                {"role": "assistant", "content": "旧回答"},
+            ])
+            await sm.persist_session(session)
+            return sid
+
+        session_id = asyncio.run(_prepare())
+
+        # 换一个空的内存 SessionManager，强制 /agent/chat 走 SQLite 恢复路径
+        restore_sm = SessionManager()
+        monkeypatch.setattr(main_module, "_session_manager", restore_sm)
+
         async def _post():
             transport = ASGITransport(app=main_module.app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
                 return await ac.post(
                     "/agent/chat",
-                    json={"session_id": "api-restore", "message": "新问题"},
+                    json={"session_id": session_id, "message": "新问题"},
+                    headers=headers,
                 )
 
         resp = asyncio.run(_post())
         assert resp.status_code == 200
+        # 恢复成功 -> 复用同一个 session_id，不返回 X-New-Session-Id
         assert "X-New-Session-Id" not in resp.headers
         # Consume the SSE body so the streaming response is fully finalized.
         assert "answer_done" in resp.text
 
         async def check():
-            session = await sm.get_session("api-restore")
+            session = await restore_sm.get_session(session_id)
             return session is not None and len(session.messages) == 2
 
         assert asyncio.run(check()) is True
+
+    def test_session_access_requires_login_and_ownership(self, tmp_path, monkeypatch):
+        """/agent/chat 必须 401（匿名）或 403（他人会话），不能借用 session_id 续聊。"""
+        import backend.main as main_module
+        from httpx import AsyncClient, ASGITransport
+
+        self._init_temp_db(tmp_path, monkeypatch)
+        owner_headers = self._register_and_login("sessionowner")
+        other_headers = self._register_and_login("sessionother")
+        monkeypatch.setattr(main_module, "_session_manager", SessionManager())
+
+        async def _create():
+            transport = ASGITransport(app=main_module.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                created = await ac.post("/agent/session", headers=owner_headers)
+                assert created.status_code == 200, created.text
+                return created.json()["session_id"]
+
+        session_id = asyncio.run(_create())
+
+        async def _chat(headers):
+            transport = ASGITransport(app=main_module.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                return await ac.post(
+                    "/agent/chat",
+                    json={"session_id": session_id, "message": "越权消息"},
+                    headers=headers,
+                )
+
+        assert asyncio.run(_chat(None)).status_code == 401
+        assert asyncio.run(_chat(other_headers)).status_code == 403
 
 
 class TestContextLog:
