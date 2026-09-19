@@ -24,5 +24,7 @@ frontend_backup/
 # 本地项目指导文档（含服务器敏感信息，不上传）
 AGENTS.md
 CLAUDE.md
+# 本地 OCR 评审修复账本（工作日志，含服务器运维记录，不上传）
+STATES.md
 # 隔离工作区
 .worktrees/
