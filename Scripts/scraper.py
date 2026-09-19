@@ -299,7 +299,8 @@ def extract_attributes_from_wikitext(wikitext):
         df = extract_stat(wiki_key, '防御')
         res = extract_stat(wiki_key, '法术抗性')
         if hp is not None:
-            attrs['生命上限_攻击_防御_法术抗性'][json_key] = f"{hp} {atk} {df} {res}"
+            # 其余字段缺失时兜底为 0，避免拼出 "1649 None None None" 之类的脏数据
+            attrs['生命上限_攻击_防御_法术抗性'][json_key] = f"{hp} {atk or 0} {df or 0} {res or 0}"
 
     tr_hp = extract_stat('信赖加成', '生命上限')
     tr_atk = extract_stat('信赖加成', '攻击')
@@ -775,6 +776,7 @@ def extract_basic_info(wikitext):
 
     charinfo_start = wikitext.find('{{CharinfoV2')
     if charinfo_start >= 0:
+        content_block = None
         brace_count = 0
         for i, char in enumerate(wikitext[charinfo_start:]):
             if char == '{':
@@ -785,6 +787,12 @@ def extract_basic_info(wikitext):
                     charinfo_end = charinfo_start + i + 1
                     content_block = wikitext[charinfo_start:charinfo_end]
                     break
+
+        if content_block is None:
+            # 大括号不闭合（页面异常/内容被截断）时无法定位块边界，直接返回空结果，
+            # 不能让下面的字段循环引用未赋值的变量而抛 UnboundLocalError 中断整轮爬取
+            print("  [警告] {{CharinfoV2 块大括号未闭合，跳过基础信息解析")
+            return info
 
         fields = {
             '职业': '职业',

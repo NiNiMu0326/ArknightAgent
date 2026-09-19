@@ -3,7 +3,9 @@ Tool definitions and execution for AgenticRAG.
 Defines tool schemas and dispatches tool calls to implementations.
 """
 
+import copy
 import logging
+import threading
 from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,13 @@ TOOL_SCHEMAS = [
 
 # ===== Tool Registry =====
 
+# 内置工具名集合：动态 schema 不允许与内置工具重名，否则 get_schemas() 会返回两个
+# 同名 function，OpenAI/DeepSeek 接口会直接报错（调用方的 mcp__ 前缀只是约定）
+_BUILTIN_TOOL_NAMES = frozenset(
+    (s.get("function") or {}).get("name") for s in TOOL_SCHEMAS
+)
+
+
 class ToolRegistry:
     """Registry that maps tool names to their executor functions."""
 
@@ -146,6 +155,11 @@ class ToolRegistry:
         name = schema["function"].get("name", "")
         if not isinstance(name, str) or not name:
             raise ValueError("tool schema 的 function.name 必须是非空字符串")
+        if name in _BUILTIN_TOOL_NAMES:
+            raise ValueError(
+                f"动态 schema 名 '{name}' 与内置工具重名，会造成 function 名重复；"
+                "请改用带前缀的名字（如 mcp__）"
+            )
         self._dynamic_schemas = [
             s for s in self._dynamic_schemas
             if (s.get("function") or {}).get("name") != name
@@ -153,8 +167,12 @@ class ToolRegistry:
         logger.info(f"Registered tool schema: {name}")
 
     def get_schemas(self) -> List[Dict]:
-        """Get all tool schemas for API calls (static + dynamically registered)."""
-        return [*TOOL_SCHEMAS, *self._dynamic_schemas]
+        """Get all tool schemas for API calls (static + dynamically registered).
+
+        返回深拷贝：调用方就地修改返回值（补 id、规范化 parameters 等）不会污染
+        模块级 TOOL_SCHEMAS 与注册表内部状态。
+        """
+        return copy.deepcopy([*TOOL_SCHEMAS, *self._dynamic_schemas])
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any], session_id: str = "") -> Any:
         """Execute a tool by name with the given arguments."""
@@ -168,14 +186,25 @@ class ToolRegistry:
 # ===== Singleton Registry =====
 
 _registry: Optional[ToolRegistry] = None
+# 惰性初始化用普通 threading.Lock：get_tool_registry() 会被 async 上下文与
+# FastAPI 线程池同时调用，不能用 asyncio 原语
+_registry_lock = threading.Lock()
 
 
 def get_tool_registry() -> ToolRegistry:
-    """Get or create the global tool registry."""
+    """Get or create the global tool registry（线程安全）.
+
+    先在局部实例上完成默认工具注册，最后一步才发布到全局：并发首次调用时，
+    其他线程要么看到 None（在锁上等待），要么看到「已注册完毕」的实例，
+    不会拿到非 None 但没有任何 executor 的半成品（否则 execute() 抛 Unknown tool）。
+    """
     global _registry
-    if _registry is None:
-        _registry = ToolRegistry()
-        _register_default_tools(_registry)
+    if _registry is None:  # 快速路径：初始化完成后不再抢锁
+        with _registry_lock:
+            if _registry is None:
+                registry = ToolRegistry()
+                _register_default_tools(registry)
+                _registry = registry
     return _registry
 
 

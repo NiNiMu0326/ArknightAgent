@@ -16,6 +16,37 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "arknights_structured.db"
 
 
+def _safe_int(value, default=0, field=""):
+    """容错转 int：空串 / None / 非数字字符串一律回退 default 并记录坏数据。
+
+    原始 JSON 里星级、敌人属性等字段可能是 ""、"null"、"3次" 之类的脏值，
+    直接 int() 会抛 ValueError/TypeError 让整个 sync_operators/sync_enemies
+    失败（一条坏数据毁掉整次同步）。字符串先 strip，空串视作缺失。
+    """
+    if isinstance(value, str):
+        value = value.strip()
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning(f"坏数据: 字段 {field or '?'} 无法转 int: {value!r}，回退 {default}")
+        return default
+
+
+def _safe_float(value, default=0.0, field=""):
+    """容错转 float，语义同 _safe_int。"""
+    if isinstance(value, str):
+        value = value.strip()
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning(f"坏数据: 字段 {field or '?'} 无法转 float: {value!r}，回退 {default}")
+        return default
+
+
 def parse_operator_stats(stats_dict):
     """Parse 生命上限_攻击_防御_法术抗性 field.
     Returns (hp, atk, def, mres) from 精英2_满级, or (0,0,0,0) if not available."""
@@ -24,25 +55,20 @@ def parse_operator_stats(stats_dict):
     elite2 = stats_dict.get("精英2_满级", "")
     if not elite2:
         return 0, 0, 0, 0
-    parts = elite2.strip().split()
-    try:
-        hp = int(parts[0]) if len(parts) > 0 else 0
-        atk = int(parts[1]) if len(parts) > 1 else 0
-        def_ = int(parts[2]) if len(parts) > 2 else 0
-        mres = int(parts[3]) if len(parts) > 3 else 0
-        return hp, atk, def_, mres
-    except (ValueError, IndexError):
-        return 0, 0, 0, 0
+    parts = str(elite2).strip().split()
+    return (
+        _safe_int(parts[0], field="精英2_满级.hp") if len(parts) > 0 else 0,
+        _safe_int(parts[1], field="精英2_满级.atk") if len(parts) > 1 else 0,
+        _safe_int(parts[2], field="精英2_满级.def") if len(parts) > 2 else 0,
+        _safe_int(parts[3], field="精英2_满级.mres") if len(parts) > 3 else 0,
+    )
 
 
 def parse_block_count(block_str):
     """Parse 阻挡数 field."""
     if not block_str:
         return 0
-    try:
-        return int(str(block_str).strip())
-    except ValueError:
-        return 0
+    return _safe_int(block_str, field="阻挡数")
 
 
 def sync_operators(conn):
@@ -80,7 +106,7 @@ def sync_operators(conn):
         """, (
             name,
             op.get("干员外文名", ""),
-            int(op.get("星级", 0)),
+            _safe_int(op.get("星级", 0), field="星级"),
             op.get("职业", ""),
             op.get("分支", ""),
             op.get("特性", ""),
@@ -124,8 +150,15 @@ def sync_enemies(conn):
         # Get level 0 stats
         level_data = enemy.get("级别数据", [])
         stats = {}
-        if level_data:
-            stats = level_data[0].get("属性", {})
+        if isinstance(level_data, list) and level_data:
+            first_level = level_data[0]
+            # 「属性」可能存在但值为 null：.get 的默认值只在键缺失时生效，
+            # 之后 stats.get 会 AttributeError 打断整次同步，这里显式判类型
+            if isinstance(first_level, dict):
+                stats = first_level.get("属性") or {}
+                if not isinstance(stats, dict):
+                    logger.warning(f"坏数据: 敌人 {name} 的级别属性不是对象，按空属性处理")
+                    stats = {}
 
         conn.execute("""
             INSERT INTO enemies (
@@ -144,12 +177,12 @@ def sync_enemies(conn):
             enemy.get("描述", ""),
             enemy.get("能力", ""),
             enemy.get("出场关卡", ""),
-            int(stats.get("最大生命值", 0)),
-            int(stats.get("攻击力", 0)),
-            int(stats.get("防御力", 0)),
-            int(stats.get("法术抗性", 0)),
-            float(stats.get("移动速度", 0)),
-            float(stats.get("攻击间隔", 0)),
+            _safe_int(stats.get("最大生命值", 0), field=f"{name}.最大生命值"),
+            _safe_int(stats.get("攻击力", 0), field=f"{name}.攻击力"),
+            _safe_int(stats.get("防御力", 0), field=f"{name}.防御力"),
+            _safe_int(stats.get("法术抗性", 0), field=f"{name}.法术抗性"),
+            _safe_float(stats.get("移动速度", 0), field=f"{name}.移动速度"),
+            _safe_float(stats.get("攻击间隔", 0), field=f"{name}.攻击间隔"),
         ))
         count += 1
 

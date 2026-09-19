@@ -1,5 +1,6 @@
 import requests
 import json
+import os
 import time
 import re
 import sys
@@ -7,13 +8,31 @@ from pathlib import Path
 from multiprocessing import Pool, cpu_count
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import PRTS_HEADERS
+from common import PRTS_HEADERS, fetch_category_members
 
 API_URL = "https://prts.wiki/api.php"
 HEADERS = PRTS_HEADERS
 
 DATA_DIR = Path("data/operator_images")
 INDEX_FILE = DATA_DIR / "index.json"
+
+def log_failure(action, target, reason):
+    """失败不再静默吞掉：输出 URL 与原因，便于区分『资源不存在』和『请求失败』。"""
+    print(f"[FAIL] {action} {target} -> {reason}", file=sys.stderr, flush=True)
+
+def parse_content_length(value):
+    """content-length 解析失败返回 None（分块传输本来就没有该响应头）。"""
+    try:
+        expected = int(value)
+    except (TypeError, ValueError):
+        return None
+    return expected if expected >= 0 else None
+
+def remove_partial(path):
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 def get_image_url(filename):
     params = {
@@ -23,32 +42,76 @@ def get_image_url(filename):
         "iiprop": "url",
         "format": "json"
     }
+    target = f"{API_URL}?titles=File:{filename}"
     try:
         response = requests.get(API_URL, params=params, headers=HEADERS, timeout=30)
+        if response.status_code != 200:
+            log_failure("查询", target, f"HTTP {response.status_code}")
+            return None
         data = response.json()
-        pages = data.get("query", {}).get("pages", {})
-        for page_id, page_data in pages.items():
-            if "imageinfo" in page_data:
-                return page_data["imageinfo"][0]["url"]
-    except Exception:
-        pass
+    except Exception as e:
+        log_failure("查询", target, f"{type(e).__name__}: {e}")
+        return None
+
+    pages = data.get("query", {}).get("pages", {})
+    for page_data in pages.values():
+        # imageinfo 可能缺失、为空列表或不含 url（文件不存在），不能直接下标取值
+        imageinfo = page_data.get("imageinfo") if isinstance(page_data, dict) else None
+        if not isinstance(imageinfo, list) or not imageinfo:
+            continue
+        first = imageinfo[0]
+        url = first.get("url") if isinstance(first, dict) else None
+        if url:
+            return url
     return None
 
 def download_image(url, filepath):
+    """以 HTTP 状态码判定成功，并校验实际写入字节数。
+
+    content-length 不再当成功门槛（分块传输没有该头、小于 5KB 的合法图片会被误杀），
+    只在存在时用于比对是否被截断；先写 .part 再 os.replace，失败不留半截文件。
+    """
     if not url:
         return False
+    filepath = Path(filepath)
+    tmp_path = filepath.with_name(filepath.name + ".part")
+    expected = None
+    written = 0
     try:
-        response = requests.get(url, headers=HEADERS, timeout=60, stream=True)
-        if response.status_code == 200:
-            content_length = int(response.headers.get('content-length', 0))
-            if content_length > 5000:
-                with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                return True
-    except Exception:
-        pass
-    return False
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        # stream=True 的响应必须用 with 关闭，否则异常路径下连接不会及时归还连接池
+        with requests.get(url, headers=HEADERS, timeout=60, stream=True) as response:
+            if response.status_code != 200:
+                log_failure("下载", url, f"HTTP {response.status_code}")
+                return False
+            expected = parse_content_length(response.headers.get("content-length"))
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    written += len(chunk)
+    except Exception as e:
+        log_failure("下载", url, f"{type(e).__name__}: {e}")
+        remove_partial(tmp_path)
+        return False
+
+    if written == 0:
+        log_failure("下载", url, "响应体为空")
+        remove_partial(tmp_path)
+        return False
+    if expected is not None and written != expected:
+        log_failure("下载", url, f"字节数不一致：期望 {expected}，实际 {written}（响应被截断）")
+        remove_partial(tmp_path)
+        return False
+
+    try:
+        os.replace(tmp_path, filepath)  # 原子替换，避免残留半截图片
+    except OSError as e:
+        log_failure("下载", url, f"替换文件失败: {e}")
+        remove_partial(tmp_path)
+        return False
+    return True
 
 def sanitize(name):
     return re.sub(r'[<>:"/\\|?*]', '_', name)
@@ -115,10 +178,8 @@ def main():
     print("目录结构已创建")
 
     print("获取干员列表...")
-    r = requests.get(f"{API_URL}?action=query&list=categorymembers&cmtitle=Category:干员&cmlimit=500&format=json", headers=HEADERS, timeout=30)
-    data = r.json()
-    members = data.get("query", {}).get("categorymembers", [])
-    operators = [m["title"] for m in members if not m["title"].startswith("Category:")]
+    members = fetch_category_members("Category:干员", headers=HEADERS)
+    operators = [m for m in members if not m.startswith("Category:")]
     print(f"共有 {len(operators)} 个干员")
 
     num_workers = min(cpu_count(), 8)
@@ -139,8 +200,12 @@ def main():
             skin_str = f" 皮肤{skin_count}" if skin_count > 0 else ""
             print(f"[{i+1}/{len(operators)}] {status} {operator}{skin_str}")
 
-    with open(INDEX_FILE, 'w', encoding='utf-8') as f:
+    # 先写 .part 再原子替换：中途失败不会破坏已有的 index.json
+    INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_index = INDEX_FILE.with_name(INDEX_FILE.name + ".part")
+    with open(tmp_index, 'w', encoding='utf-8') as f:
         json.dump(operator_data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_index, INDEX_FILE)
 
     print(f"\n{'='*50}")
     print(f"爬取完成! 成功: {success_count}/{len(operators)}")

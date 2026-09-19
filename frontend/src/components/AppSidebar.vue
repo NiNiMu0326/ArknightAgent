@@ -148,8 +148,13 @@
       </div>
     </div>
 
-    <div class="modal-overlay" :class="{ active: showDeleteModal }" @click.self="showDeleteModal = false">
-      <div class="modal-content modal-sm">
+    <div
+      class="modal-overlay"
+      :class="{ active: showDeleteModal }"
+      @click.self="showDeleteModal = false"
+      @keydown="onDeleteModalKeydown"
+    >
+      <div class="modal-content modal-sm" ref="deleteModalEl" tabindex="-1">
         <div class="modal-body text-left">
           <h2>删除会话</h2>
           <p class="modal-text">确定删除会话 "<strong>{{ deleteTargetName }}</strong>" 吗？此操作不可撤销。</p>
@@ -164,7 +169,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSessionStore } from '../stores/sessions'
 import { useAuthStore } from '../stores/auth'
@@ -203,12 +208,13 @@ const showGraphControls = computed(() => route.path === '/graph')
 
 // Load graph data when graph page is shown
 watch(showGraphControls, (show) => {
-  if (show && isEntitiesEmpty(gc.graphData.value.entities)) {
+  if (!show) return
+  // 在途判重：immediate 触发的加载可能尚未返回（graphData 仍为空），
+  // 这里用 gc.loading 拦住重复请求，避免进入图谱页时重复拉取 /knowledge-graph
+  if (isEntitiesEmpty(gc.graphData.value.entities) && !gc.loading.value) {
     gc.loadGraphData()
   }
-  if (show) {
-    gc.updateAvailableRelations()
-  }
+  gc.updateAvailableRelations()
 }, { immediate: true })
 
 watch(() => gc.selectedNodes.value, () => {
@@ -228,11 +234,15 @@ const _authChangedHandler = async () => {
   }
 }
 
+// 底部状态点：基于后端 /status 的真实健康检查，每 30s 轮询。
+// 声明必须在使用它的 onMounted/onUnmounted 之前：onMounted 回调虽在 setup 之后才执行，
+// 但把 let/const 放在引用点之后属于 TDZ 脆弱写法，任何提前调用都会直接抛错。
+const systemOnline = ref(true)
+let healthTimerId = null
+
 onMounted(() => {
-  // Load data if on graph page and data not loaded
-  if (showGraphControls.value && isEntitiesEmpty(gc.graphData.value.entities)) {
-    gc.loadGraphData()
-  }
+  // 图谱数据由上面的 watch(showGraphControls, { immediate: true }) 统一加载：
+  // 之前这里再判一次 isEntitiesEmpty 会因为请求尚未返回而重复拉取 /knowledge-graph
   // Listen for auth changes to sync sessions
   window.addEventListener('auth-changed', _authChangedHandler)
   checkSystemHealth()
@@ -247,13 +257,24 @@ onUnmounted(() => {
   }
 })
 
-// 底部状态点：基于后端 /status 的真实健康检查，每 30s 轮询
-const systemOnline = ref(true)
-let healthTimerId = null
+// 健康探测超时：api.getStatus() 内部只校验 response.ok，请求一旦挂住（TCP 已连上但服务不响应）
+// 会一直 pending，状态点就永远停在「System Online」。这里给单次探测加上限，超时即判为离线。
+const HEALTH_CHECK_TIMEOUT_MS = 10000
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('健康检查超时')), ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
 
 async function checkSystemHealth() {
   try {
-    const res = await api.getStatus()
+    // api.getStatus 已在 api.js 校验 response.ok，非 2xx / 非 JSON 都会 reject 到这里
+    const res = await withTimeout(api.getStatus(), HEALTH_CHECK_TIMEOUT_MS)
     systemOnline.value = !!res
   } catch {
     systemOnline.value = false
@@ -288,20 +309,31 @@ function executeDelete() {
   deleteTargetName.value = ''
 }
 
-// 删除弹窗打开时，按 Enter 触发删除
+// 删除弹窗打开时按 Enter 确认删除。
+// 原实现把监听挂在 document 上：只有 showDeleteModal 变 false 才移除，弹窗打开期间组件被
+// 卸载（路由跳转/父组件销毁）就会泄漏监听；而且弹窗打开时页面任意输入框（聊天输入框、
+// 会话重命名输入框）按 Enter 都会误触发删除。
+// 现改为把 keydown 绑在弹窗容器上（不再有全局监听，卸载即失效），并用 ref 把焦点移入弹窗。
+const deleteModalEl = ref(null)
+
 function onDeleteModalKeydown(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault()
-    executeDelete()
+  if (e.key !== 'Enter' || e.isComposing) return
+  const target = e.target
+  if (target instanceof HTMLElement) {
+    // 焦点在按钮上时交给按钮自身的激活行为，否则在「取消」上按 Enter 也会执行删除
+    if (target.closest('button')) return
+    // 焦点在弹窗内的输入类控件上时不抢 Enter
+    if (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
   }
+  e.preventDefault()
+  executeDelete()
 }
 
-watch(showDeleteModal, (val) => {
-  if (val) {
-    document.addEventListener('keydown', onDeleteModalKeydown)
-  } else {
-    document.removeEventListener('keydown', onDeleteModalKeydown)
-  }
+watch(showDeleteModal, async (val) => {
+  if (!val) return
+  // 打开后把焦点移入弹窗：否则焦点还停在列表里的删除按钮上，Enter 事件不会冒泡到弹窗容器
+  await nextTick()
+  deleteModalEl.value?.focus()
 })
 </script>
 

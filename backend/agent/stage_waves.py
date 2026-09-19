@@ -8,6 +8,8 @@ This complements prts-mcp's `get_stage_enemies`, which only returns the enemy
 list with total counts and battle stats — it has no wave/order information.
 """
 
+import asyncio
+import functools
 import json
 import logging
 import os
@@ -15,6 +17,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# asyncio.to_thread 在 Python 3.9 才加入；服务器运行的是 3.8.10，此处提供兼容回退。
+if not hasattr(asyncio, "to_thread"):
+    async def _to_thread(func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
+
+    asyncio.to_thread = _to_thread
 
 # 工具结果大小保护：防止超长关卡的完整刷怪表撑爆 LLM 上下文
 MAX_STAGE_WAVES = 60
@@ -41,8 +51,20 @@ def _latest_zh_dir(kind: str) -> Optional[Path]:
     releases = _share_root() / kind / ".releases"
     if not releases.exists():
         return None
-    candidates = sorted(releases.glob("*/zh_CN"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
+    latest: Optional[Path] = None
+    latest_mtime = -1.0
+    for candidate in releases.glob("*/zh_CN"):
+        # 目录可能在 glob 与 stat 之间被 prts-mcp 的同步/清理流程删除，
+        # 单个失败项跳过即可，不要影响整个工具调用。
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError as exc:
+            logger.warning(f"[stage-waves] skip unreadable release dir {candidate}: {exc}")
+            continue
+        if mtime > latest_mtime:
+            latest_mtime = mtime
+            latest = candidate
+    return latest
 
 
 def _load_stage_table() -> Dict[str, Any]:
@@ -55,9 +77,15 @@ def _load_stage_table() -> Dict[str, Any]:
         try:
             with open(table_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            stages = data.get("stages", {})
-            if isinstance(stages, dict):
-                _stage_table = stages
+            stages = data.get("stages")
+            # 解析成功但结构异常（缺 stages / 不是 dict / 空表）时不能置位标志，
+            # 否则空表会被永久缓存，直到进程重启才可能恢复。
+            if not isinstance(stages, dict) or not stages:
+                logger.warning(
+                    f"[stage-waves] stage_table.json 结构异常（stages 缺失或为空）: {table_file}"
+                )
+                return _stage_table
+            _stage_table = stages
             _stage_table_loaded = True
             logger.info(f"[stage-waves] loaded {len(_stage_table)} stages")
         except Exception as exc:
@@ -76,11 +104,18 @@ def _load_enemy_names() -> Dict[str, str]:
         try:
             with open(handbook, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            enemy_data = data.get("enemyData", {})
-            if isinstance(enemy_data, dict):
-                for enemy_id, info in enemy_data.items():
-                    if isinstance(info, dict) and info.get("name"):
-                        _enemy_names[enemy_id] = str(info["name"])
+            enemy_data = data.get("enemyData")
+            # 同上：缺 enemyData / 不是 dict / 空表时不缓存，下次调用重试
+            if not isinstance(enemy_data, dict) or not enemy_data:
+                logger.warning(
+                    f"[stage-waves] enemy_handbook_table.json 结构异常（enemyData 缺失或为空）: {handbook}"
+                )
+                return _enemy_names
+            names: Dict[str, str] = {}
+            for enemy_id, info in enemy_data.items():
+                if isinstance(info, dict) and info.get("name"):
+                    names[enemy_id] = str(info["name"])
+            _enemy_names = names
             _enemy_names_loaded = True
             logger.info(f"[stage-waves] loaded {len(_enemy_names)} enemy names")
         except Exception as exc:
@@ -230,21 +265,24 @@ async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -
     if not stage_key:
         return {"error": "stage_code 参数必填，例如 '1-7'、'CE-5' 或 'main_01-07'"}
 
-    stage_info = _resolve_stage(stage_key)
+    # stage_table.json / 关卡 JSON / 敌人手册都可能有数 MB，未命中缓存时还含 rglob
+    # 全树扫描；这些同步磁盘 I/O 放到线程里执行，避免阻塞事件循环。
+    stage_info = await asyncio.to_thread(_resolve_stage, stage_key)
     if not stage_info:
         return {
             "error": f"未找到关卡 '{stage_key}'。请检查关卡编号（如 1-7、CE-5），"
                      "或先查关卡列表确认 ID",
         }
 
-    level_data = _load_level_json(stage_info)
+    level_data = await asyncio.to_thread(_load_level_json, stage_info)
     if not level_data:
         return {
             "error": f"关卡 '{stage_key}' 的出怪数据文件不可用（未同步 levels 数据），"
                      "可改用工具列表中的关卡敌人工具查看敌人列表与数量",
         }
 
-    spawns = _spawn_sequence(level_data)
+    # _spawn_sequence 内部会懒加载敌人名表（同样是一次大 JSON 读取），一并移出事件循环
+    spawns = await asyncio.to_thread(_spawn_sequence, level_data)
     waves = []
     for spawn in spawns:
         wave_num = spawn["wave"]
@@ -263,13 +301,19 @@ async def execute_stage_waves(arguments: Dict[str, Any], session_id: str = "") -
     total_waves = len(waves)
     truncated = False
     kept_waves = []
-    kept_spawns = 0
+    remaining = MAX_STAGE_SPAWNS
     for wave in waves:
-        if len(kept_waves) >= MAX_STAGE_WAVES or kept_spawns >= MAX_STAGE_SPAWNS:
+        if len(kept_waves) >= MAX_STAGE_WAVES or remaining <= 0:
+            truncated = True
+            break
+        wave_spawns = wave["spawns"]
+        if len(wave_spawns) > remaining:
+            # 单波就超出剩余预算：按预算裁剪当前波，避免 kept_spawns 远超上限
+            kept_waves.append({**wave, "spawns": wave_spawns[:remaining]})
             truncated = True
             break
         kept_waves.append(wave)
-        kept_spawns += len(wave["spawns"])
+        remaining -= len(wave_spawns)
 
     note = "波次按关卡数据中的 fragments 划分，按出现顺序排列；pre_delay/interval 为关卡原始数据（秒），仅供参考"
     if truncated:

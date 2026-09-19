@@ -495,6 +495,8 @@ const expandedTraceId = ref(null)
 const expandedTrace = ref(null)
 const expandedSteps = ref(new Set())
 let detailRequestSeq = 0  // 竞态守卫：只有最后一次请求允许写入详情
+let tracesListSeq = 0        // 竞态守卫：只有最后一次列表请求允许写入 tracesList
+let tracesListPending = 0    // 在途列表请求数，>0 时跳过静默轮询，避免慢响应堆积请求
 
 // ── LangFuse 状态 ──
 const lfTraces = ref([])
@@ -508,6 +510,8 @@ const lfDetail = ref(null)
 const expandedLfSpans = ref(new Set())
 const expandedLfGens = ref(new Set())
 let lfDetailRequestSeq = 0
+let lfListSeq = 0            // LangFuse 列表同样是轮询目标，需要同样的序号守卫
+let lfListPending = 0
 
 // 自动刷新：组件存活期间始终每 10 秒静默刷新一次
 let autoRefreshTimer = null
@@ -541,32 +545,44 @@ function stopAutoRefresh() {
 // ── 本地 traces ──
 
 async function loadTraces(silent = false) {
+  // 静默轮询在列表请求在途时直接跳过，避免慢响应时轮询持续堆积请求
+  if (silent && tracesListPending > 0) return
+  const seq = ++tracesListSeq
+  tracesListPending++
   if (!silent) {
     loadingTraces.value = true
     tracesError.value = ''
   }
   try {
-    const result = await api.getTraces(tracesPage.value, PAGE_SIZE, {
-      status: filterStatus.value,
-      modelId: filterModel.value,
-      q: filterKeyword.value.trim(),
-    })
-    if (result.error) throw new Error(result.error)
-    tracesList.value = result.traces || []
-    tracesTotal.value = result.total || 0
-    tracesTotalPages.value = Math.ceil(tracesTotal.value / PAGE_SIZE) || 1
-    tracesLangfuse.value = { enabled: result.langfuse_enabled, host: result.langfuse_host }
-    tracesError.value = ''
-    // 删除/筛选后当前页可能超出范围，回退到最后一页
-    if (tracesPage.value > tracesTotalPages.value) {
-      tracesPage.value = tracesTotalPages.value
-      if (!silent) loadingTraces.value = false
-      return loadTraces(silent)
+    // 删除/筛选后当前页可能超出范围，修正页码后重取一次（用循环代替递归，避免再次进入在途守卫）
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await api.getTraces(tracesPage.value, PAGE_SIZE, {
+        status: filterStatus.value,
+        modelId: filterModel.value,
+        q: filterKeyword.value.trim(),
+      })
+      if (seq !== tracesListSeq) return  // 已有更新的请求发出，丢弃本次结果
+      if (result.error) throw new Error(result.error)
+      const total = result.total || 0
+      const totalPages = Math.ceil(total / PAGE_SIZE) || 1
+      if (attempt === 0 && tracesPage.value > totalPages) {
+        tracesPage.value = totalPages
+        continue
+      }
+      tracesList.value = result.traces || []
+      tracesTotal.value = total
+      tracesTotalPages.value = totalPages
+      tracesLangfuse.value = { enabled: result.langfuse_enabled, host: result.langfuse_host }
+      tracesError.value = ''
+      return
     }
   } catch (e) {
+    if (seq !== tracesListSeq) return
     if (!silent) tracesError.value = e.message || '加载失败'
+  } finally {
+    tracesListPending--
+    if (!silent && seq === tracesListSeq) loadingTraces.value = false
   }
-  if (!silent) loadingTraces.value = false
 }
 
 async function loadSummary() {
@@ -758,28 +774,40 @@ async function deleteSelectedTraces() {
 // ── LangFuse ──
 
 async function loadLangfuseTraces(silent = false) {
+  // 静默轮询在途时直接跳过，避免慢响应时轮询持续堆积请求
+  if (silent && lfListPending > 0) return
+  const seq = ++lfListSeq
+  lfListPending++
   if (!silent) {
     loadingLangfuse.value = true
     lfError.value = ''
   }
   try {
     const result = await api.getLangfuseTraces(lfPage.value, PAGE_SIZE)
+    if (seq !== lfListSeq) return  // 已有更新的请求发出，丢弃本次结果
     if (result.error) {
-      lfError.value = result.error
-      lfTraces.value = []
-      lfTotal.value = 0
+      // 静默轮询失败时保留上一次成功数据，否则 LangFuse 抖一下列表就被替换成错误面板
+      if (!silent) {
+        lfError.value = result.error
+        lfTraces.value = []
+        lfTotal.value = 0
+      }
     } else {
       lfTraces.value = result.traces || []
       lfTotal.value = result.total || 0
       lfTotalPages.value = Math.ceil(lfTotal.value / PAGE_SIZE) || 1
+      lfError.value = ''  // 成功即清除历史错误，短暂故障可自愈
     }
   } catch (e) {
+    if (seq !== lfListSeq) return
     if (!silent) {
       lfError.value = '无法连接到 LangFuse: ' + e.message
       lfTraces.value = []
     }
+  } finally {
+    lfListPending--
+    if (!silent && seq === lfListSeq) loadingLangfuse.value = false
   }
-  if (!silent) loadingLangfuse.value = false
 }
 
 function goLfPage(p) {

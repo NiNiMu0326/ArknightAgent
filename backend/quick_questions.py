@@ -128,22 +128,26 @@ def pick_unique_questions(
     count: int,
     attempts_per_item: int = 50,
 ) -> List[Dict]:
-    """Build `count` distinct questions by sampling `candidates` via `make_question`."""
+    """Build up to `count` distinct questions by sampling `candidates` via `make_question`.
+
+    批内不重复是硬约束：抽样若干次仍拿不到新标签时提前结束，返回少于 count 条，
+    由调用方（get_quick_questions）用固定模板补齐——而不是硬塞一个与批内已有
+    标签重复的题目，那样前端会同时渲染两条完全相同的问题。
+    """
     picked: List[Dict] = []
     if not candidates:
         return picked
     for _ in range(count):
+        question = None
         for _ in range(attempts_per_item):
-            question = make_question(random.choice(candidates))
-            if question["label"] not in exclude_labels:
-                exclude_labels.add(question["label"])
-                picked.append(question)
+            candidate = make_question(random.choice(candidates))
+            if candidate["label"] not in exclude_labels:
+                question = candidate
                 break
-        else:
-            # 候选都撞上了已有标签时仍返回一个，避免批次缩水
-            question = make_question(random.choice(candidates))
-            exclude_labels.add(question["label"])
-            picked.append(question)
+        if question is None:
+            break  # 候选都撞上了本批已有标签：停止追加，避免批内重复
+        exclude_labels.add(question["label"])
+        picked.append(question)
     return picked
 
 

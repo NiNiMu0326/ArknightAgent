@@ -24,6 +24,39 @@ function getAuthHeaders(withJson = false) {
   return headers
 }
 
+/**
+ * 从失败响应中提取可读的错误信息。
+ *
+ * 统一替换各接口里 `await response.json()` 的样板：
+ * - 响应不是 JSON（网关 HTML 错误页、空响应体）时回退到 fallback，不再抛 SyntaxError；
+ * - FastAPI 的 422 校验错误 detail 是数组/对象，序列化后再展示，避免出现 [object Object]；
+ * - 不回退到跳转/刷新（401 只抛出错误，由调用方决定如何提示），避免刷新循环。
+ *
+ * @param {Response} response - fetch 返回的响应
+ * @param {string} fallback - 无法提取服务端信息时使用的兜底文案
+ * @returns {Promise<string>}
+ */
+export async function extractErrorDetail(response, fallback) {
+  let detail
+  try {
+    const body = await response.json()
+    detail = body?.detail ?? body?.message ?? body?.error
+  } catch {
+    detail = undefined // 非 JSON 响应体：走下面的兜底文案
+  }
+  if (typeof detail === 'string' && detail.trim()) return detail
+  // 空串/纯空白串视为「无可用信息」，直接走兜底文案（否则 JSON.stringify('') 会返回字面量 ""）
+  if (detail !== undefined && detail !== null && !(typeof detail === 'string' && !detail.trim())) {
+    try {
+      return JSON.stringify(detail)
+    } catch {
+      // 无法序列化时退回兜底文案
+    }
+  }
+  const status = response?.status
+  return status ? `${fallback}（HTTP ${status}）` : fallback
+}
+
 export const api = {
   // ===== Auth APIs =====
 
@@ -34,8 +67,7 @@ export const api = {
       body: JSON.stringify({ account, username, password })
     })
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || '注册失败')
+      throw new Error(await extractErrorDetail(response, '注册失败'))
     }
     return response.json()
   },
@@ -47,8 +79,7 @@ export const api = {
       body: JSON.stringify({ account, password })
     })
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || '登录失败')
+      throw new Error(await extractErrorDetail(response, '登录失败'))
     }
     return response.json()
   },
@@ -68,8 +99,7 @@ export const api = {
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
     })
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || '修改密码失败')
+      throw new Error(await extractErrorDetail(response, '修改密码失败'))
     }
     return response.json()
   },
@@ -85,7 +115,7 @@ export const api = {
   },
 
   async getConversationMessages(sessionId) {
-    const response = await fetch(`${API_BASE}/conversations/${sessionId}/messages`, {
+    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(sessionId)}/messages`, {
       headers: getAuthHeaders()
     })
     if (!response.ok) throw new Error('获取消息失败')
@@ -103,7 +133,7 @@ export const api = {
   },
 
   async deleteConversation(sessionId) {
-    const response = await fetch(`${API_BASE}/conversations/${sessionId}`, {
+    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
       headers: getAuthHeaders()
     })
@@ -112,7 +142,7 @@ export const api = {
   },
 
   async renameConversation(sessionId, name) {
-    const response = await fetch(`${API_BASE}/conversations/${sessionId}/rename`, {
+    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(sessionId)}/rename`, {
       method: 'PUT',
       headers: getAuthHeaders(true),
       body: JSON.stringify({ name })
@@ -123,34 +153,38 @@ export const api = {
 
   async getStatus() {
     const response = await fetch(`${API_BASE}/status`)
+    if (!response.ok) throw new Error('获取服务状态失败')
     return response.json()
   },
 
   async getChunks(collection = 'operators') {
-    const response = await fetch(`${API_BASE}/chunks/${collection}`)
+    const response = await fetch(`${API_BASE}/chunks/${encodeURIComponent(collection)}`)
+    if (!response.ok) throw new Error('获取切块列表失败')
     return response.json()
   },
 
   async getChunk(collection, filename) {
-    const response = await fetch(`${API_BASE}/chunks/${collection}/${filename}`)
+    const response = await fetch(`${API_BASE}/chunks/${encodeURIComponent(collection)}/${encodeURIComponent(filename)}`)
+    if (!response.ok) throw new Error('获取切块详情失败')
     return response.json()
   },
 
   async getGraphData() {
     const response = await fetch(`${API_BASE}/knowledge-graph`)
+    if (!response.ok) throw new Error('获取图谱数据失败')
     return response.json()
   },
 
   async getStats() {
     const response = await fetch(`${API_BASE}/stats`)
+    if (!response.ok) throw new Error('获取统计数据失败')
     return response.json()
   },
 
   async getOperators() {
     const response = await fetch(`${API_BASE}/operators`)
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || 'Failed to get operators')
+      throw new Error(await extractErrorDetail(response, 'Failed to get operators'))
     }
     return response.json()
   },
@@ -158,8 +192,7 @@ export const api = {
   async getCharacters() {
     const response = await fetch(`${API_BASE}/characters`)
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || 'Failed to get characters')
+      throw new Error(await extractErrorDetail(response, 'Failed to get characters'))
     }
     return response.json()
   },
@@ -167,8 +200,7 @@ export const api = {
   async getStories() {
     const response = await fetch(`${API_BASE}/stories`)
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || 'Failed to get stories')
+      throw new Error(await extractErrorDetail(response, 'Failed to get stories'))
     }
     return response.json()
   },
@@ -181,6 +213,7 @@ export const api = {
     const response = await fetch(`${API_BASE}/agent/traces?${params}`, {
       headers: getAuthHeaders(),
     })
+    if (!response.ok) throw new Error('获取 trace 列表失败')
     return response.json()
   },
 
@@ -193,7 +226,7 @@ export const api = {
   },
 
   async getTraceDetail(traceId) {
-    const response = await fetch(`${API_BASE}/agent/traces/${traceId}`, {
+    const response = await fetch(`${API_BASE}/agent/traces/${encodeURIComponent(traceId)}`, {
       headers: getAuthHeaders(),
     })
     if (!response.ok) throw new Error('获取 trace 详情失败')
@@ -231,7 +264,7 @@ export const api = {
   },
 
   async exportSingleTrace(traceId) {
-    const response = await fetch(`${API_BASE}/agent/traces/${traceId}/export`, {
+    const response = await fetch(`${API_BASE}/agent/traces/${encodeURIComponent(traceId)}/export`, {
       headers: getAuthHeaders(),
     })
     if (!response.ok) throw new Error('导出失败')
@@ -243,11 +276,12 @@ export const api = {
     const response = await fetch(`${API_BASE}/agent/traces/langfuse?page=${page}&limit=${limit}`, {
       headers: getAuthHeaders(),
     })
+    if (!response.ok) throw new Error('获取 LangFuse trace 列表失败')
     return response.json()
   },
 
   async getLangfuseTraceDetail(traceId) {
-    const response = await fetch(`${API_BASE}/agent/traces/langfuse/${traceId}`, {
+    const response = await fetch(`${API_BASE}/agent/traces/langfuse/${encodeURIComponent(traceId)}`, {
       headers: getAuthHeaders(),
     })
     if (!response.ok) throw new Error('获取 LangFuse trace 详情失败')
@@ -258,8 +292,7 @@ export const api = {
     const url = refresh ? `${API_BASE}/quick-questions?refresh=true` : `${API_BASE}/quick-questions`
     const response = await fetch(url)
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || 'Failed to get quick questions')
+      throw new Error(await extractErrorDetail(response, 'Failed to get quick questions'))
     }
     return response.json()
   },
@@ -276,7 +309,7 @@ export const api = {
   },
 
   async deleteAgentSession(sessionId) {
-    const response = await fetch(`${API_BASE}/agent/session/${sessionId}`, {
+    const response = await fetch(`${API_BASE}/agent/session/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
       headers: getAuthHeaders(),
     })
@@ -293,7 +326,7 @@ export const api = {
   },
 
   async getAgentSessionMessages(sessionId) {
-    const response = await fetch(`${API_BASE}/agent/session/${sessionId}/messages`, {
+    const response = await fetch(`${API_BASE}/agent/session/${encodeURIComponent(sessionId)}/messages`, {
       headers: getAuthHeaders(),
     })
     if (!response.ok) throw new Error('Failed to get messages')
@@ -334,8 +367,12 @@ export const api = {
     }
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: 'Request failed' }))
-      throw new Error(err.detail || 'Agent chat failed')
+      throw new Error(await extractErrorDetail(response, 'Agent chat failed'))
+    }
+
+    // 204/无响应体时 body 为 null，直接 getReader() 会抛 TypeError
+    if (!response.body) {
+      throw new Error('响应体为空，无法读取流式数据')
     }
 
     const reader = response.body.getReader()
@@ -373,21 +410,40 @@ export const api = {
       }
     }
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    let streamEnded = false
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
 
-      for (const line of lines) parseLine(line)
+        for (const line of lines) parseLine(line)
+      }
+
+      // Flush multi-byte UTF-8 sequences held by the decoder, then process the
+      // remaining partial line (if any) after the stream ends.
+      buffer += decoder.decode()
+      if (buffer.trim()) parseLine(buffer)
+      streamEnded = true
+    } finally {
+      // 回调抛异常或外部 abort 时读取循环会中途退出：取消未读完的流并释放 reader，
+      // 否则连接与 ReadableStream 得不到及时释放（长时间停留页面会累积未释放的流）。
+      if (!streamEnded) {
+        try {
+          await reader.cancel()
+        } catch {
+          // 流已关闭/已取消，忽略
+        }
+      }
+      try {
+        reader.releaseLock()
+      } catch {
+        // 仍有挂起的读取时 releaseLock 会抛错，忽略即可
+      }
     }
-
-    // Flush multi-byte UTF-8 sequences held by the decoder, then process the
-    // remaining partial line (if any) after the stream ends.
-    buffer += decoder.decode()
-    if (buffer.trim()) parseLine(buffer)
 
     if (!receivedTerminal) {
       throw new Error('连接中断：响应流未正常结束，请重试')
@@ -426,8 +482,14 @@ export function downloadBlob(blob, filename) {
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  a.rel = 'noopener'
+  a.style.display = 'none'
+  // <a> 需挂载到文档上，Safari 下未挂载的点击不会触发下载
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(url)
+  a.remove()
+  // 立即 revoke 会让部分浏览器（Firefox/Safari）中断下载，延迟释放对象 URL
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
 }
 
 export function debounce(fn, delay = 300) {
@@ -444,4 +506,3 @@ export function escapeHtml(str) {
   div.textContent = str
   return div.innerHTML
 }
-

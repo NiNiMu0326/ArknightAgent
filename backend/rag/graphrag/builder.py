@@ -15,6 +15,8 @@ class GraphBuilder:
             from backend.config import ENTITY_RELATIONS_FILE
             self.entity_relations_path = str(ENTITY_RELATIONS_FILE)
         self.graph = None
+        # 无向视图缓存：to_undirected() 会复制整张图，而 find_path 是热路径
+        self._undirected = None
 
     def build(self, force: bool = False) -> nx.DiGraph:
         """Build NetworkX directed graph from entity relations.
@@ -26,6 +28,7 @@ class GraphBuilder:
             return self.graph
 
         self.graph = nx.DiGraph()
+        self._undirected = None
 
         if not Path(self.entity_relations_path).exists():
             raise FileNotFoundError(
@@ -48,21 +51,75 @@ class GraphBuilder:
                             self.graph.add_node(name, type=entity_type)
         elif isinstance(entities_data, list):
             # 旧格式: 列表
+            skipped_entities = 0
             for e in entities_data:
-                if isinstance(e, dict):
-                    self.graph.add_node(e.get('entity', ''), type=e.get('type', '干员'))
+                if not isinstance(e, dict):
+                    skipped_entities += 1
+                    continue
+                name = e.get('entity')
+                # 缺 entity 键时旧代码用空字符串建节点，会污染图谱（空名节点）
+                if not isinstance(name, str) or not name.strip():
+                    skipped_entities += 1
+                    continue
+                self.graph.add_node(name, type=e.get('type', '干员'))
+            if skipped_entities:
+                logger.warning(
+                    f"Skipped {skipped_entities} invalid entity record(s) "
+                    f"(missing/blank 'entity' key): {self.entity_relations_path}"
+                )
 
         # Add edges (relations)
-        for relation in data.get('relations', []):
+        # entity_relations.json 由爬取/同步脚本产出，单条脏数据（缺键/非 dict）
+        # 不应让整个 GraphRAG 构建失败，这里显式校验并跳过非法记录。
+        relations_data = data.get('relations', [])
+        if not isinstance(relations_data, list):
+            logger.warning(
+                f"'relations' is not a list ({type(relations_data).__name__}), ignored: "
+                f"{self.entity_relations_path}"
+            )
+            relations_data = []
+        skipped_relations = 0
+        for relation in relations_data:
+            if not isinstance(relation, dict):
+                skipped_relations += 1
+                continue
+            source = relation.get('source')
+            target = relation.get('target')
+            if not isinstance(source, str) or not source.strip():
+                skipped_relations += 1
+                continue
+            if not isinstance(target, str) or not target.strip():
+                skipped_relations += 1
+                continue
             self.graph.add_edge(
-                relation['source'],
-                relation['target'],
+                source,
+                target,
                 relation=relation.get('relation', ''),
                 description=relation.get('description', '')
             )
+        if skipped_relations:
+            logger.warning(
+                f"Skipped {skipped_relations} invalid relation record(s) "
+                f"(missing/blank 'source'/'target' or not a dict): {self.entity_relations_path}"
+            )
+
+        # 图结构在 build 之后不再变化，缓存无向视图供 find_path 复用
+        self._undirected = self.graph.to_undirected()
 
         print(f"Built graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
         return self.graph
+
+    def _undirected_view(self) -> nx.Graph:
+        """Return the cached undirected view used for path finding.
+
+        ``to_undirected()`` copies the whole graph and ``find_path`` is a hot
+        path, so the copy is made once per build.  The node-count check keeps
+        the cache correct if the graph was mutated after build (e.g. 测试里
+        build 之后又 add_node)。
+        """
+        if self._undirected is None or self._undirected.number_of_nodes() != self.graph.number_of_nodes():
+            self._undirected = self.graph.to_undirected()
+        return self._undirected
 
     def get_neighbors(self, entity: str, depth: int = 1) -> List[Dict]:
         """Get neighboring entities and their relations (both directions in directed graph)."""
@@ -159,8 +216,8 @@ class GraphBuilder:
             return {"path": [], "edges": []}
 
         try:
-            # Use undirected view for path finding (discover all connections)
-            undirected = self.graph.to_undirected()
+            # Use the cached undirected view for path finding (discover all connections)
+            undirected = self._undirected_view()
             # Use single_source_shortest_path with cutoff to limit path length
             paths = nx.single_source_shortest_path(undirected, entity1, cutoff=max_hops)
             if entity2 not in paths:

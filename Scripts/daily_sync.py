@@ -19,6 +19,7 @@
 import sys
 import os
 import json
+import shutil
 import subprocess
 import argparse
 from pathlib import Path
@@ -93,8 +94,13 @@ def rebuild_faiss() -> bool:
     return True
 
 
-def rechunk_all(skip_knowledge: bool = False) -> bool:
-    """重新运行 chunker（文本处理，快速）。"""
+def rechunk_all() -> bool:
+    """重新运行 chunker（文本处理，快速）。
+
+    注意：chunker.py 没有「跳过 knowledge」的开关，它会基于 data/all_*.json
+    重建 operators/stories/knowledge 三个集合，因此这里没有 skip_knowledge 参数，
+    调用方也不要臆造该开关（形参无效会造成「以为跳过、实际覆盖」的误解）。
+    """
     log("  重新切块...")
     chunker_script = BASE_DIR / "backend" / "data" / "chunker.py"
     if not chunker_script.exists():
@@ -228,35 +234,47 @@ def incremental_graphrag(new_files: dict = None, dry_run: bool = False) -> bool:
         try:
             with open(entity_file, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
-            existing_relations = existing_data.get("relations", [])
+            if not isinstance(existing_data, dict):
+                raise ValueError(f"顶层结构应为对象，实际为 {type(existing_data).__name__}")
+            raw_relations = existing_data.get("relations") or []
+            if not isinstance(raw_relations, list):
+                raise ValueError("relations 字段应为列表")
+            existing_relations = [r for r in raw_relations if isinstance(r, dict)]
 
-            entities_raw = existing_data.get("entities", {})
+            entities_raw = existing_data.get("entities") or {}
             if isinstance(entities_raw, dict):
                 # dict 格式: {"干员": [...], "组织": [...], ...}
                 for etype, names in entities_raw.items():
                     if isinstance(names, list):
-                        existing_entities_dict.setdefault(etype, set())
+                        existing_entities_dict.setdefault(str(etype), set())
                         for name in names:
                             if isinstance(name, str) and name.strip():
-                                existing_entities_dict[etype].add(name.strip())
+                                existing_entities_dict[str(etype)].add(name.strip())
                                 existing_entity_names.add(name.strip())
                 existing_entity_count = sum(len(v) for v in existing_entities_dict.values())
             elif isinstance(entities_raw, list):
                 # list 格式: [{"entity": "name", "type": "type"}, ...]
                 for e in entities_raw:
                     if isinstance(e, dict):
-                        name = e.get("entity", "").strip()
-                        etype = e.get("type", "干员").strip()
+                        name = str(e.get("entity") or "").strip()
+                        etype = str(e.get("type") or "干员").strip()
                         if name:
                             existing_entities_dict.setdefault(etype, set()).add(name)
                             existing_entity_names.add(name)
-                existing_entity_count = len(entities_raw)
+                existing_entity_count = len(existing_entity_names)
             log(f"  现有: {existing_entity_count} entities ({len(existing_entities_dict)} 类型), {len(existing_relations)} relations")
         except Exception as e:
-            log(f"    ⚠ 读取现有 entity_relations.json 失败: {e}")
+            # 读取失败必须中止：否则 existing_* 为空，后面的保存会用本批结果整体覆盖文件，
+            # 历史实体与关系被静默清空（不可恢复）。
+            log(f"    ✗ 读取现有 entity_relations.json 失败，中止本批增量以避免覆盖历史数据: {e}")
+            return False
 
     # --- 收集已知关系类型 ---
-    known_types = list(set(r.get("relation", "") for r in existing_relations if r.get("relation")))
+    known_types = []
+    for r in existing_relations:
+        rel = str(r.get("relation") or "").strip()
+        if rel and rel not in known_types:
+            known_types.append(rel)
 
     # --- 收集已知干员（从 dict 格式的干员类型中） ---
     known_operators = list(existing_entities_dict.get("干员", set()))
@@ -310,8 +328,10 @@ def incremental_graphrag(new_files: dict = None, dry_run: bool = False) -> bool:
         merged_entities = {k: set(v) for k, v in existing_entities_dict.items()}
         new_entity_count = 0
         for e in all_new_entities:
-            name = e.get("entity", "").strip()
-            etype = e.get("type", "干员").strip()
+            if not isinstance(e, dict):
+                continue
+            name = str(e.get("entity") or "").strip()
+            etype = str(e.get("type") or "干员").strip()
             if not name or any(c in name for c in "[]{}()"):
                 continue
             if name not in existing_entity_names:
@@ -324,9 +344,11 @@ def incremental_graphrag(new_files: dict = None, dry_run: bool = False) -> bool:
         seen_relations = set()
         merged_relations = []
         for r in existing_relations + all_new_relations:
-            src = r.get("source", "").strip()
-            tgt = r.get("target", "").strip()
-            rel = r.get("relation", "").strip()
+            if not isinstance(r, dict):
+                continue
+            src = str(r.get("source") or "").strip()
+            tgt = str(r.get("target") or "").strip()
+            rel = str(r.get("relation") or "").strip()
             if not src or not tgt or not rel:
                 continue
             if any(c in src + tgt for c in "[]{}()"):
@@ -341,7 +363,12 @@ def incremental_graphrag(new_files: dict = None, dry_run: bool = False) -> bool:
         log(f"  合并结果: +{new_entity_count} entities, +{new_relation_count} relations")
         log(f"  总计: {total_entities} entities ({len(merged_entities)} 类型), {len(merged_relations)} relations")
 
-        # --- 保存 ---
+        # --- 空结果保护：绝不用空图覆盖既有数据 ---
+        if not merged_entities and not merged_relations:
+            log("  ✗ 合并结果为空（既有数据为空且本批未抽到内容），放弃写入以避免清空文件")
+            return False
+
+        # --- 保存：先写临时文件再原子替换，并保留上一版备份 ---
         from datetime import timezone as tz
         output = {
             "entities": merged_entities,
@@ -349,8 +376,18 @@ def incremental_graphrag(new_files: dict = None, dry_run: bool = False) -> bool:
             "last_extraction": datetime.now(tz.utc).isoformat(),
         }
         entity_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(entity_file, "w", encoding="utf-8") as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
+        tmp_file = entity_file.with_name(entity_file.name + ".tmp")
+        backup_file = entity_file.with_name(entity_file.name + ".bak")
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(output, f, ensure_ascii=False, indent=2)
+            if entity_file.exists():
+                shutil.copy2(entity_file, backup_file)
+            os.replace(tmp_file, entity_file)
+        except Exception:
+            if tmp_file.exists():
+                tmp_file.unlink()
+            raise
         log(f"    ✓ 已保存到 {entity_file}")
 
         return True
@@ -433,11 +470,20 @@ def main():
     # ===== 4. 检查是否需要重新切块和重建索引 =====
     log("\n[4/4] 索引维护")
 
+    index_ok = True
+
     # 重新切块（确保 chunks 目录与 data 目录一致）
     # 这是最快的保证一致性的方式
-    rechunk_ok = rechunk_all(skip_knowledge=True)
-    if rechunk_ok:
-        rebuild_bm25()
+    rechunk_ok = rechunk_all()
+    if not rechunk_ok:
+        index_ok = False
+    else:
+        bm25_ok = rebuild_bm25()
+        if not bm25_ok:
+            index_ok = False
+        else:
+            # BM25 索引已按新 chunks 重建，服务内存里仍是旧索引，必须重启才能保持一致
+            any_changes = True
 
     # FAISS 增量更新：只对有 diff 的 collection 重建
     # 简单策略：如果 lore_sync 有更新，重建 operators + stories 的 FAISS
@@ -453,74 +499,86 @@ def main():
 
         client = FAISSClientWrapper()
         emb_client = SiliconFlowClient()
-
+    except Exception as e:
+        log(f"    ✗ FAISS 增量更新初始化失败: {e}")
+        index_ok = False
+    else:
         for coll in ["operators", "stories"]:
             chunks_dir = BASE_DIR / "chunks" / coll
             if not chunks_dir.exists():
                 continue
 
-            # 加载现有索引
-            result = client.load_index(coll)
-            if result is None:
-                log(f"    {coll}: 索引不存在，全量构建")
-                # 全量构建
-                chunk_files = sorted(list(chunks_dir.glob("*.md")) + list(chunks_dir.glob("*.txt")))
-                docs = []
-                for fp in chunk_files:
-                    content = fp.read_text(encoding="utf-8")
-                    docs.append(Document(
-                        page_content=content,
-                        metadata={"chunk_id": fp.stem, "section": fp.stem,
-                                  "source_file": fp.name, "source_collection": coll}
-                    ))
-                if docs:
-                    embeddings = emb_client.embed([d.page_content for d in docs])
-                    client.build_index(coll, docs, embeddings=embeddings)
-                    log(f"      ✓ 已构建 {len(docs)} chunks")
-                continue
-
-            index, meta = result
-            existing_ids = {m["id"] for m in meta.values()}
-            chunk_files = set(p.stem for p in chunks_dir.glob("*.md"))
-            chunk_files |= set(p.stem for p in chunks_dir.glob("*.txt"))
-            new_ids = chunk_files - existing_ids
-
-            if not new_ids:
-                log(f"    {coll}: 无新增 (已有 {index.ntotal})")
-                continue
-
-            log(f"    {coll}: +{len(new_ids)} 新 chunks")
-            new_docs = []
-            for cid in sorted(new_ids):
-                for ext in [".md", ".txt"]:
-                    fp = chunks_dir / f"{cid}{ext}"
-                    if fp.exists():
+            # 单个 collection 失败不影响其它 collection，但必须记为失败
+            try:
+                # 加载现有索引
+                result = client.load_index(coll)
+                if result is None:
+                    log(f"    {coll}: 索引不存在，全量构建")
+                    # 全量构建
+                    chunk_files = sorted(list(chunks_dir.glob("*.md")) + list(chunks_dir.glob("*.txt")))
+                    docs = []
+                    for fp in chunk_files:
                         content = fp.read_text(encoding="utf-8")
-                        new_docs.append(Document(
+                        docs.append(Document(
                             page_content=content,
-                            metadata={"chunk_id": cid, "section": cid,
+                            metadata={"chunk_id": fp.stem, "section": fp.stem,
                                       "source_file": fp.name, "source_collection": coll}
                         ))
-                        break
+                    if docs:
+                        embeddings = emb_client.embed([d.page_content for d in docs])
+                        client.build_index(coll, docs, embeddings=embeddings)
+                        log(f"      ✓ 已构建 {len(docs)} chunks")
+                    continue
 
-            if new_docs:
-                texts = [d.page_content for d in new_docs]
-                embeddings = emb_client.embed(texts)
-                total = client.add_documents(coll, new_docs, embeddings=embeddings)
-                log(f"      ✓ 总计 {total}")
-                any_changes = True
+                index, meta = result
+                existing_ids = {m["id"] for m in meta.values()}
+                chunk_files = set(p.stem for p in chunks_dir.glob("*.md"))
+                chunk_files |= set(p.stem for p in chunks_dir.glob("*.txt"))
+                new_ids = chunk_files - existing_ids
 
-    except Exception as e:
-        log(f"    ✗ FAISS 增量更新失败: {e}")
+                if not new_ids:
+                    log(f"    {coll}: 无新增 (已有 {index.ntotal})")
+                    continue
+
+                log(f"    {coll}: +{len(new_ids)} 新 chunks")
+                new_docs = []
+                for cid in sorted(new_ids):
+                    for ext in [".md", ".txt"]:
+                        fp = chunks_dir / f"{cid}{ext}"
+                        if fp.exists():
+                            content = fp.read_text(encoding="utf-8")
+                            new_docs.append(Document(
+                                page_content=content,
+                                metadata={"chunk_id": cid, "section": cid,
+                                          "source_file": fp.name, "source_collection": coll}
+                            ))
+                            break
+
+                if new_docs:
+                    texts = [d.page_content for d in new_docs]
+                    embeddings = emb_client.embed(texts)
+                    total = client.add_documents(coll, new_docs, embeddings=embeddings)
+                    log(f"      ✓ 总计 {total}")
+                    any_changes = True
+
+            except Exception as e:
+                log(f"    ✗ {coll} FAISS 增量更新失败: {e}")
+                index_ok = False
 
     # ===== 5. 重启服务 =====
+    if not index_ok:
+        log("\n⚠ 索引维护存在失败项，索引可能未完全更新（详见上面的错误日志）")
     if any_changes:
         log("\n索引有更新，重启服务...")
         restart_uvicorn()
     else:
         log("\n无索引变更，跳过重启")
 
-    log("\n每日自动同步完成")
+    if index_ok:
+        log("\n每日自动同步完成")
+    else:
+        log("\n每日自动同步结束，但索引维护失败，请检查日志")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

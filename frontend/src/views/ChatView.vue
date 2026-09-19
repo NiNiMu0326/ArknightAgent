@@ -76,10 +76,10 @@
                   <div class="chat-text markdown-body" v-html="renderMessageWithSources(msg.content, msg.sources)"></div>
                   <div
                     class="answer-image-gallery"
-                    v-if="getAnswerImages(sessionStore.currentSession?.messages, idx).length"
+                    v-if="getAnswerImages(idx).length"
                   >
                     <button
-                      v-for="(img, imgIdx) in getAnswerImages(sessionStore.currentSession?.messages, idx)"
+                      v-for="(img, imgIdx) in getAnswerImages(idx)"
                       :key="imgIdx"
                       type="button"
                       class="answer-image-item"
@@ -168,7 +168,7 @@
                         {{ msg.results[call.id].summary }}
                       </div>
                       <div class="tool-call-pending" v-if="!msg.results?.[call.id]">
-                        <span class="pending-dot"></span> 执行中 {{ formatElapsed(nowTs - msg.timestamp) }}
+                        <span class="pending-dot"></span> 执行中 <PendingElapsedText :start="msg.timestamp" />
                       </div>
                       <div class="tool-result-detail" v-if="msg.results?.[call.id] && expandedTools.includes(call.id)">
                         <div class="tool-detail-summary">{{ msg.results[call.id].summary }}</div>
@@ -264,39 +264,39 @@
                             <div class="tool-detail-mcp">
                               <div
                                 class="tool-detail-mcp-text"
-                                v-if="normalizeMcpDisplay(msg.results[call.id].data).text"
+                                v-if="getMcpDisplay(msg.results[call.id].data).text"
                               >
-                                {{ normalizeMcpDisplay(msg.results[call.id].data).text }}
+                                {{ getMcpDisplay(msg.results[call.id].data).text }}
                               </div>
                               <div
                                 class="tool-detail-table-wrapper"
-                                v-if="normalizeMcpDisplay(msg.results[call.id].data).table"
+                                v-if="getMcpDisplay(msg.results[call.id].data).table"
                               >
                                 <table class="tool-detail-table">
                                   <thead>
                                     <tr>
-                                      <th v-for="col in normalizeMcpDisplay(msg.results[call.id].data).table.columns" :key="col">{{ col }}</th>
+                                      <th v-for="col in getMcpDisplay(msg.results[call.id].data).table.columns" :key="col">{{ col }}</th>
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    <tr v-for="(row, ri) in normalizeMcpDisplay(msg.results[call.id].data).table.rows" :key="ri">
-                                      <td v-for="col in normalizeMcpDisplay(msg.results[call.id].data).table.columns" :key="col">{{ row[col] }}</td>
+                                    <tr v-for="(row, ri) in getMcpDisplay(msg.results[call.id].data).table.rows" :key="ri">
+                                      <td v-for="col in getMcpDisplay(msg.results[call.id].data).table.columns" :key="col">{{ row[col] }}</td>
                                     </tr>
                                   </tbody>
                                 </table>
                               </div>
                               <div
                                 class="tool-detail-mcp-json"
-                                v-else-if="normalizeMcpDisplay(msg.results[call.id].data).json"
+                                v-else-if="getMcpDisplay(msg.results[call.id].data).json"
                               >
-                                <pre>{{ normalizeMcpDisplay(msg.results[call.id].data).json }}</pre>
+                                <pre>{{ getMcpDisplay(msg.results[call.id].data).json }}</pre>
                               </div>
                               <div
                                 class="tool-detail-mcp-images"
-                                v-if="normalizeMcpDisplay(msg.results[call.id].data).images.length"
+                                v-if="getMcpDisplay(msg.results[call.id].data).images.length"
                               >
                                 <a
-                                  v-for="(img, i) in normalizeMcpDisplay(msg.results[call.id].data).images"
+                                  v-for="(img, i) in getMcpDisplay(msg.results[call.id].data).images"
                                   :key="i"
                                   :href="img.data_url"
                                   target="_blank"
@@ -347,7 +347,7 @@
             <div class="chat-message assistant" v-if="currentAnswer">
               <div class="chat-bubble">
                 <div class="chat-role">Arknights Agent</div>
-                <div class="current-answer markdown-body is-streaming" v-html="renderMessageWithSources(currentAnswer, currentAnswerSources)"></div>
+                <div class="current-answer markdown-body is-streaming" v-html="renderStreamingAnswer()"></div>
               </div>
             </div>
             <div class="chat-message assistant" v-if="!currentAnswer && !currentThinking">
@@ -487,13 +487,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
+import { ref, reactive, computed, defineComponent, createTextVNode, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useSessionStore } from '../stores/sessions'
 import { useQuickQuestionsStore } from '../stores/quickQuestions'
 import { useSettingsStore } from '../stores/settings'
 import { useSourceDrawerStore } from '../stores/sourceDrawer'
 import { api, formatTime, escapeHtml } from '../api'
 import { renderMarkdown } from '../utils/markdown'
+import DOMPurify from 'dompurify'
 import {
   isMcpTool,
   getToolIcon as resolveToolIcon,
@@ -540,25 +541,28 @@ const showStop = computed(() => isLoading.value && !inputText.value.trim())
 // 用户消息行内编辑状态
 const editingIdx = ref(-1)
 const editingText = ref('')
-// Ticker for live "executing ... Xs" elapsed display on pending tool calls
-const nowTs = ref(Date.now())
-let elapsedTickerId = null
 // 每次 startAgentStream 递增；用于防止旧后台流结束时覆盖新流的 UI 状态/AbortController
 let streamGeneration = 0
 // 当前活动流（切会话时需要访问其局部状态：标记 thinking 已持久化，避免重复落库）
 let activeStreamState = null
-
-function startElapsedTicker() {
-  if (elapsedTickerId !== null) return
-  elapsedTickerId = setInterval(() => { nowTs.value = Date.now() }, 200)
-}
-
-function stopElapsedTicker() {
-  if (elapsedTickerId !== null) {
-    clearInterval(elapsedTickerId)
-    elapsedTickerId = null
-  }
-}
+// 「执行中 X.Xs」的计时子组件。
+// 该文本位于 v-memo 列表内部：若把 nowTs 加进 v-memo 依赖，整份消息列表每 200ms 都会
+// 失效重渲染，等于取消 memo 收益；因此把计时下沉到子组件自身，只让它按 200ms 重渲染。
+// 渲染结果是纯文本节点，DOM 结构（div.tool-call-pending > span.pending-dot + 文本）保持不变。
+const PendingElapsedText = defineComponent({
+  name: 'PendingElapsedText',
+  props: {
+    start: { type: Number, default: 0 },
+  },
+  setup(props) {
+    const elapsed = ref('')
+    const tick = () => { elapsed.value = formatElapsed(Date.now() - props.start) }
+    tick()
+    const tickerId = setInterval(tick, 200)
+    onUnmounted(() => clearInterval(tickerId))
+    return () => createTextVNode(elapsed.value)
+  },
+})
 
 function formatElapsed(ms) {
   if (!ms || ms < 0) return ''
@@ -623,7 +627,10 @@ onActivated(() => {
 // Only abort on true unmount (e.g. HMR, app destroy)
 onUnmounted(() => {
   console.log('[ChatView] unmounted')
-  stopElapsedTicker()
+  if (_streamRenderTimer !== null) {
+    clearTimeout(_streamRenderTimer)
+    _streamRenderTimer = null
+  }
   window.removeEventListener('resize', updateQuickScrollState)
   if (quickResizeObserver) {
     quickResizeObserver.disconnect()
@@ -767,25 +774,42 @@ function isProcessExpanded(idx) {
   return expandedProcesses.value.includes(`proc-${getProcessStartIndex(idx)}`)
 }
 
+// 过程卡片的标题与耗时：模板里每张卡片要读 3 次（标题 1 次 + 耗时 2 次），
+// 每次都要回扫一遍消息分组。这里改为「一次遍历算出所有过程分组的元信息」，
+// 由 computed 缓存并在消息变化时自动失效，模板侧只做一次 Map 查询。
+const processMetaByIdx = computed(() => {
+  const messages = sessionStore.currentSession?.messages || []
+  const map = new Map()
+  let current = null
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    if (!isProcessRole(msg?.role)) {
+      current = null
+      continue
+    }
+    if (current === null) current = { toolRounds: 0, elapsed: 0 }
+    if (msg.role === 'tool_call') {
+      current.toolRounds++
+      for (const call of (msg.calls || [])) {
+        current.elapsed += msg.results?.[call.id]?.time_ms || 0
+      }
+    } else if (msg.role === 'thinking') {
+      current.elapsed += msg.time_ms || 0
+    }
+    // 同一分组共享同一个累加对象，组内任意下标读到的都是整组统计（与原实现一致）
+    map.set(i, current)
+  }
+  return map
+})
+
 function getProcessTitle(idx) {
-  const group = getProcessMessages(idx)
-  const toolRounds = group.filter(m => m.role === 'tool_call').length
-  return toolRounds > 0 ? `工具调用 · ${toolRounds} 轮` : '思考过程'
+  const meta = processMetaByIdx.value.get(idx)
+  if (!meta || meta.toolRounds === 0) return '思考过程'
+  return `工具调用 · ${meta.toolRounds} 轮`
 }
 
 function getProcessElapsed(idx) {
-  const group = getProcessMessages(idx)
-  let total = 0
-  for (const m of group) {
-    if (m.role === 'thinking') {
-      total += m.time_ms || 0
-    } else if (m.role === 'tool_call' && m.results) {
-      for (const call of (m.calls || [])) {
-        total += m.results[call.id]?.time_ms || 0
-      }
-    }
-  }
-  return total
+  return processMetaByIdx.value.get(idx)?.elapsed || 0
 }
 
 function toggleProcessCard(idx) {
@@ -817,10 +841,45 @@ function formatToolResult(data) {
   return String(data)
 }
 
+// MCP 工具结果的展示归一化缓存。
+// 模板里 normalizeMcpDisplay(...) 会被调用 10 次左右，表格部分还在 v-for 的每个单元格里
+// 重跑一次完整归一化（JSON.stringify + 行列扫描，行×列接近平方级）。
+// 归一化只取决于 data 对象本身，而工具结果到达时是整个 data 对象被替换（不原地修改），
+// 因此用 WeakMap 按对象引用缓存即可，消息条目释放时缓存自动回收。
+const EMPTY_MCP_DISPLAY = Object.freeze({ text: '', table: null, json: '', images: [] })
+const mcpDisplayCache = new WeakMap()
+
+function getMcpDisplay(data) {
+  if (!data || typeof data !== 'object') return EMPTY_MCP_DISPLAY
+  let display = mcpDisplayCache.get(data)
+  if (!display) {
+    display = normalizeMcpDisplay(data)
+    mcpDisplayCache.set(data, display)
+  }
+  return display
+}
+
 const MAX_ANSWER_IMAGES = 8
 
+// 回答图片：模板里 getAnswerImages 会在 v-if 与 v-for 中各调用一次（每次都要回扫一遍
+// 该轮的工具调用）。这里改为 computed 预计算 idx → 图片列表，消息变化时自动失效。
+const answerImagesByIdx = computed(() => {
+  const messages = sessionStore.currentSession?.messages || []
+  const map = new Map()
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === 'assistant') {
+      map.set(i, collectAnswerImages(messages, i))
+    }
+  }
+  return map
+})
+
+function getAnswerImages(idx) {
+  return answerImagesByIdx.value.get(idx) || []
+}
+
 // 收集回答前这一轮工具调用返回的图片（立绘），按调用顺序展示在最终回答里
-function getAnswerImages(messages, assistantIdx) {
+function collectAnswerImages(messages, assistantIdx) {
   if (!Array.isArray(messages) || assistantIdx == null) return []
   const images = []
   const seen = new Set()
@@ -880,6 +939,19 @@ function handleZoomWheel(event) {
   zoomScale.value = Math.min(5, Math.max(0.2, +(zoomScale.value + step).toFixed(2)))
 }
 
+// 属性专用转义。api.js 的 escapeHtml 走 textContent→innerHTML，只会转义 & < >，
+// 不转义引号；把它的结果直接拼进 HTML 属性值时，一个 " 就能闭合属性并注入
+// onmouseover/onerror 等内联事件。这里补齐 & " ' < > 五个字符。
+function escapeAttr(value) {
+  if (value === null || value === undefined) return ''
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
 function renderMessageWithSources(content, messageSources) {
   if (!content) return ''
 
@@ -908,7 +980,8 @@ function renderMessageWithSources(content, messageSources) {
       // Use collection from structured sources if available, else infer from prefix
       let collection = inferCollection(chunkId, sourceByChunkId)
 
-      return `(<span class="source-link" data-chunk-id="${escapeHtml(chunkId)}" data-collection="${escapeHtml(collection)}" title="点击查看原文">${escapeHtml(chunkId)}</span>)`
+      // 属性值必须用 escapeAttr：chunkId 来自 LLM 输出，可能出现引号
+      return `(<span class="source-link" data-chunk-id="${escapeAttr(chunkId)}" data-collection="${escapeAttr(collection)}" title="点击查看原文">${escapeHtml(chunkId)}</span>)`
     }
   )
 
@@ -919,13 +992,19 @@ function renderMessageWithSources(content, messageSources) {
       const ws = webSources[webIndex]
       webIndex++
       if (ws && ws.url) {
-        return `(<span class="source-link source-link-web" data-url="${escapeHtml(ws.url)}" data-source-id="web" title="${escapeHtml(ws.title || '网页来源')}">网页来源</span>)`
+        // ws.url / ws.title 完全来自网络搜索结果（不可信），属性值一律 escapeAttr
+        return `(<span class="source-link source-link-web" data-url="${escapeAttr(ws.url)}" data-source-id="web" title="${escapeAttr(ws.title || '网页来源')}">网页来源</span>)`
       }
       return '(<span class="source-link source-link-web" data-source-id="web">网页来源</span>)'
     }
   )
 
-  return html
+  // 上面的引用链接是 renderMarkdown 消毒「之后」才拼进 HTML 的，处于消毒覆盖范围之外。
+  // 除了属性值转义，这里对最终结果再消毒一次兜底：即使转义被绕过（新的拼接点漏了转义等），
+  // 注入的内联事件/脚本也会在 v-html 渲染前被 DOMPurify 去掉。
+  return DOMPurify.sanitize(html, {
+    ADD_ATTR: ['target', 'rel', 'title', 'data-chunk-id', 'data-collection', 'data-url', 'data-source-id'],
+  })
 }
 
 function handleSourceClick(event) {
@@ -935,6 +1014,8 @@ function handleSourceClick(event) {
 
   const url = link.dataset.url
   if (url) {
+    // data-url 来自不可信的网络搜索结果：只允许 http(s)，挡掉 javascript:/data: 之类协议
+    if (!/^https?:\/\//i.test(url)) return
     window.open(url, '_blank', 'noopener,noreferrer')
     return
   }
@@ -1065,7 +1146,6 @@ async function startAgentStream(content) {
   const generation = ++streamGeneration
   isLoading.value = true
   hasNewContent.value = false
-  startElapsedTicker()
   currentAnswer.value = ''
   pendingAnswerDelta = ''
   currentAnswerSources.value = null
@@ -1118,7 +1198,6 @@ async function startAgentStream(content) {
       sessionStore.addMessage('assistant', '错误: 无法创建会话，请重试')
       if (activeStreamState === streamState) activeStreamState = null
       isLoading.value = false
-      stopElapsedTicker()
       return
     }
   }
@@ -1334,10 +1413,8 @@ async function startAgentStream(content) {
   sessionStore.finalizePendingToolCalls(streamSessionId)
 
   // 本流结束后，不再允许切会话逻辑通过 activeStreamState 修改它。
-  // 若它仍是"唯一活动流"（后台旧流结束且没有新流），顺带停止耗时 ticker。
   if (activeStreamState === streamState) {
     activeStreamState = null
-    stopElapsedTicker()
   }
 
   // 只有当前活动流才能清理/更新全局 UI 状态与 AbortController；
@@ -1346,7 +1423,6 @@ async function startAgentStream(content) {
 
   abortController.value = null
   isLoading.value = false
-  stopElapsedTicker()
   // 无论正常完成还是中断/出错，思考与工具面板默认折叠
   expandedThinking.value = []
   expandedTools.value = []
@@ -1467,6 +1543,48 @@ function jumpToBottom() {
 const userAtBottom = ref(true)
 let pendingAnswerDelta = ''
 let answerFlushScheduled = false
+
+// 流式回答的 HTML 渲染节流：markdown-it 解析 + DOMPurify 消毒每次都要重跑「整段」已生成内容，
+// 成本随答案长度增长（整体接近 O(n²)），而 currentAnswer 每个 rAF（约 60fps）就会追加一次增量。
+// 这里把已渲染 HTML 的更新限制到 ≥100ms 一次：窗口内复用上一帧结果（观感上仍是连续追加），
+// 并用 trailing 定时器保证最后一段增量最终一定会渲染出来。字符串累加仍在 rAF 里做，不受影响。
+const STREAM_RENDER_THROTTLE_MS = 100
+const streamRenderTick = ref(0)
+let _streamRenderTimer = null
+let _streamHtmlCache = { text: '', sources: null, html: '', at: 0 }
+
+function renderStreamingAnswer() {
+  // 订阅 tick：trailing 定时器到点后能重新走到这里渲染最后一段增量
+  void streamRenderTick.value
+  const text = currentAnswer.value || ''
+  const sources = currentAnswerSources.value
+  const cache = _streamHtmlCache
+  // 输入完全没变（同一次更新里渲染函数被重入、或只是展开了别的面板触发的重渲染）：
+  // 直接复用缓存。缺了这条会走下面的「文本未变化」分支从而白跑一遍整段解析。
+  if (cache.html && text === cache.text && sources === cache.sources) return cache.html
+  const sinceLastRender = Date.now() - cache.at
+  // 仅在「同一段流式文本继续往后追加」且仍在节流窗口内时复用上一帧 HTML；
+  // 文本被重置（新流/切会话）或来源列表变化时立即重新渲染
+  if (
+    cache.html &&
+    sources === cache.sources &&
+    text !== cache.text &&
+    text.startsWith(cache.text) &&
+    sinceLastRender < STREAM_RENDER_THROTTLE_MS
+  ) {
+    if (_streamRenderTimer === null) {
+      _streamRenderTimer = setTimeout(() => {
+        _streamRenderTimer = null
+        // 只有确实还有未渲染的增量时才补渲染：期间若已有逐帧渲染追上进度就无需重复解析
+        if (_streamHtmlCache.text !== currentAnswer.value) streamRenderTick.value++
+      }, Math.max(0, STREAM_RENDER_THROTTLE_MS - sinceLastRender))
+    }
+    return cache.html
+  }
+  const html = renderMessageWithSources(text, sources)
+  _streamHtmlCache = { text, sources, html, at: Date.now() }
+  return html
+}
 
 function flushPendingDelta() {
   if (pendingAnswerDelta) {

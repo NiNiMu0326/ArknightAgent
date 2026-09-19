@@ -3,7 +3,7 @@
  * agentChat SSE stream parsing, and utility functions.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { api, debounce, escapeHtml, formatTime } from '../src/api.js'
+import { api, debounce, escapeHtml, extractErrorDetail, formatTime } from '../src/api.js'
 
 function sseResponse(events, { ok = true, status = 200, headers = {}, jsonBody = {} } = {}) {
   const text = events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('')
@@ -230,6 +230,116 @@ describe('agentChat', () => {
 })
 
 // ============================================================
+// Error extraction & non-2xx handling (T34)
+// ============================================================
+
+/** 非 JSON 响应体（网关 HTML 错误页 / 空响应体）：json() 抛 SyntaxError */
+function nonJsonResponse(status = 502) {
+  return {
+    ok: false,
+    status,
+    headers: new Headers(),
+    json: async () => { throw new SyntaxError('Unexpected token < in JSON') },
+    text: async () => '<html>502 Bad Gateway</html>',
+  }
+}
+
+describe('extractErrorDetail', () => {
+  it('非 JSON 响应体回退到 fallback 并带上 HTTP 状态码，而不是抛 SyntaxError', async () => {
+    // 防的回归：直接 await response.json() 会在网关 HTML 错误页上抛 SyntaxError，
+    // 调用方只能看到 "Unexpected token <"，看不到状态码。
+    await expect(extractErrorDetail(nonJsonResponse(502), '获取统计数据失败'))
+      .resolves.toBe('获取统计数据失败（HTTP 502）')
+  })
+
+  it('FastAPI 的 detail 数组（422 校验错误）序列化成可读 JSON', async () => {
+    // 防的回归：detail 是数组/对象时直接模板拼接会显示 [object Object]
+    const detail = [{ loc: ['body', 'account'], msg: 'field required', type: 'value_error.missing' }]
+    const body = { detail }
+    await expect(extractErrorDetail(jsonResponse(body, { ok: false, status: 422 }), '注册失败'))
+      .resolves.toBe(JSON.stringify(detail))
+  })
+
+  it('detail 是对象时同样给出可读信息', async () => {
+    const detail = { code: 'rate_limited', retry_after: 30 }
+    const out = await extractErrorDetail(jsonResponse({ detail }, { ok: false, status: 429 }), '登录失败')
+    expect(out).toBe(JSON.stringify(detail))
+    expect(out).not.toContain('[object Object]')
+  })
+
+  it('优先取 detail，其次 message / error', async () => {
+    await expect(extractErrorDetail(jsonResponse({ detail: 'D' }, { ok: false, status: 400 }), 'X'))
+      .resolves.toBe('D')
+    await expect(extractErrorDetail(jsonResponse({ message: 'M' }, { ok: false, status: 400 }), 'X'))
+      .resolves.toBe('M')
+    await expect(extractErrorDetail(jsonResponse({ error: 'E' }, { ok: false, status: 400 }), 'X'))
+      .resolves.toBe('E')
+  })
+
+  it('响应体里没有可用信息时回退到 fallback（带状态码）', async () => {
+    await expect(extractErrorDetail(jsonResponse({}, { ok: false, status: 500 }), '同步会话失败'))
+      .resolves.toBe('同步会话失败（HTTP 500）')
+    await expect(extractErrorDetail(jsonResponse(null, { ok: false, status: 401 }), '未登录'))
+      .resolves.toBe('未登录（HTTP 401）')
+    // 没有 status 时至少给出 fallback 文案
+    await expect(extractErrorDetail({ json: async () => ({}) }, '服务不可用'))
+      .resolves.toBe('服务不可用')
+  })
+})
+
+describe('非 2xx 响应必须抛错，不能静默返回错误体（T34）', () => {
+  // 防的回归：这些接口原来直接 `return response.json()` 不校验 response.ok，
+  // 401/500 时调用方拿到的是错误体（或难以理解的 JSON 异常），页面表现为静默失败。
+  const cases = [
+    ['getStatus', () => api.getStatus(), '获取服务状态失败'],
+    ['getChunks', () => api.getChunks('operators'), '获取切块列表失败'],
+    ['getChunk', () => api.getChunk('operators', 'a.json'), '获取切块详情失败'],
+    ['getGraphData', () => api.getGraphData(), '获取图谱数据失败'],
+    ['getStats', () => api.getStats(), '获取统计数据失败'],
+    ['getTraces', () => api.getTraces(), '获取 trace 列表失败'],
+    ['getTraceSummary', () => api.getTraceSummary(), '获取 trace 统计失败'],
+    ['getTraceDetail', () => api.getTraceDetail('t1'), '获取 trace 详情失败'],
+    ['getLangfuseTraces', () => api.getLangfuseTraces(), '获取 LangFuse trace 列表失败'],
+    ['getLangfuseTraceDetail', () => api.getLangfuseTraceDetail('t1'), '获取 LangFuse trace 详情失败'],
+    ['deleteTraces', () => api.deleteTraces(['t1']), '删除失败'],
+  ]
+
+  for (const [name, call, message] of cases) {
+    it(`${name} 在 HTTP 500 时抛错且不解析响应体`, async () => {
+      const json = vi.fn(async () => ({ detail: '服务器炸了' }))
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false, status: 500, headers: new Headers(), json, blob: vi.fn(),
+      })
+      await expect(call()).rejects.toThrow(message)
+      expect(json).not.toHaveBeenCalled() // 没有把错误体当成正常返回值
+    })
+  }
+
+  it('exportTraces / exportSingleTrace 在非 2xx 时抛错且不读 blob', async () => {
+    const blob = vi.fn()
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false, status: 500, headers: new Headers(), json: vi.fn(), blob,
+    })
+    await expect(api.exportTraces()).rejects.toThrow('导出失败')
+    await expect(api.exportTraces(['t1'])).rejects.toThrow('导出失败')
+    await expect(api.exportSingleTrace('t1')).rejects.toThrow('导出失败')
+    expect(blob).not.toHaveBeenCalled()
+  })
+
+  it('getTraces 正常路径仍组装分页与筛选参数', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ traces: [], total: 0 }))
+    const result = await api.getTraces(2, 50, { status: 'error', modelId: 'deepseek-v4-flash', q: '能天使' })
+    expect(result).toEqual({ traces: [], total: 0 })
+    const params = new URLSearchParams(fetch.mock.calls[0][0].split('?')[1])
+    expect(params.get('page')).toBe('2')
+    expect(params.get('limit')).toBe('50')
+    expect(params.get('status')).toBe('error')
+    expect(params.get('model_id')).toBe('deepseek-v4-flash')
+    expect(params.get('q')).toBe('能天使')
+  })
+})
+
+// ============================================================
 // Utility functions
 // ============================================================
 
@@ -254,6 +364,17 @@ describe('escapeHtml', () => {
     const out = escapeHtml('<script>alert("xss")</script>')
     expect(out).not.toContain('<script>')
     expect(out).toContain('&lt;script&gt;')
+  })
+
+  it('does NOT escape double/single quotes —— 因此不可用于 HTML 属性值', () => {
+    // 固化现状（T02 的背景）：escapeHtml 走 textContent→innerHTML，只转义 & < >。
+    // 把它的输出拼进属性值（如 data-collection="${escapeHtml(x)}"）时，
+    // 一个 " 就能闭合属性并注入 onmouseover —— 它是"文本节点转义"，不是"属性转义"。
+    // 属性场景请用 ChatView.vue 的 escapeAttr（覆盖 & " ' < >），见 test/chatView.test.js。
+    const out = escapeHtml(`a"b'c`)
+    expect(out).toBe(`a"b'c`)
+    expect(out).not.toContain('&quot;')
+    expect(out).not.toContain('&#39;')
   })
 
   it('returns empty string for falsy input', () => {

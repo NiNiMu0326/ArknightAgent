@@ -1,8 +1,12 @@
 """
 backend/db.py — SQLite database initialization and helpers.
 """
+import logging
+
 import aiosqlite
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent / "data" / "arknights_rag.db"
 
@@ -95,4 +99,44 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_agent_context_logs_session_id ON agent_context_logs(session_id);
             CREATE INDEX IF NOT EXISTS idx_agent_context_logs_created_at ON agent_context_logs(created_at);
         """)
+        await _migrate_user_ownership(db)
         await db.commit()
+
+
+async def _add_column_if_missing(db: aiosqlite.Connection, table: str, column: str, ddl: str) -> None:
+    """幂等地给表加列（列已存在时忽略）。"""
+    try:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        logger.info(f"[DB] Migrated: added {table}.{column}")
+    except Exception:
+        # 绝大多数情况是 "duplicate column name"（列已存在）——幂等迁移的正常路径
+        pass
+
+
+async def _migrate_user_ownership(db: aiosqlite.Connection) -> None:
+    """幂等迁移：把「会话/trace → 用户」归属落库（T01）。
+
+    归属必须是持久化数据，否则服务重启（每次 push 部署都会重启）后进程内的
+    归属表为空，任何登录用户都能靠先发请求把别人的会话/trace 认领成自己的。
+
+    - ``agent_session_store.user_id``：agent 会话属主（原表只有会话内容）
+    - ``traces.user_id``：trace 属主（原表没有 user 维度，只能靠内存推断）
+
+    加列不破坏既有表结构与数据；历史行的 user_id 为 NULL，语义是「归属未知」，
+    读取侧对未知归属一律按拒绝处理（fail-closed）。
+    """
+    await _add_column_if_missing(db, "agent_session_store", "user_id", "INTEGER")
+    await _add_column_if_missing(db, "traces", "user_id", "INTEGER")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_traces_user_id ON traces(user_id)")
+    # 回填：trace 的归属可从未过期的会话行推出（只填 NULL，不覆盖已有归属）
+    try:
+        await db.execute(
+            "UPDATE traces SET user_id = ("
+            "  SELECT s.user_id FROM agent_session_store s WHERE s.session_id = traces.session_id"
+            ") WHERE traces.user_id IS NULL AND EXISTS ("
+            "  SELECT 1 FROM agent_session_store s "
+            "  WHERE s.session_id = traces.session_id AND s.user_id IS NOT NULL"
+            ")"
+        )
+    except Exception as exc:
+        logger.warning(f"[DB] traces.user_id backfill skipped: {exc}")

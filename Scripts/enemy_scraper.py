@@ -36,42 +36,29 @@ DATA_DIR = BASE_DIR / "data"
 SCRIPTS_DIR = Path(__file__).parent
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import PRTS_HEADERS
+from common import PRTS_HEADERS, fetch_category_members
 
 HEADERS = PRTS_HEADERS
 
 # ===================== PRTS API 工具 =====================
 
 def get_enemy_list_from_api() -> list:
-    """通过 PRTS API Category 获取敌人列表。"""
-    url = "https://prts.wiki/api.php"
-    params = {
-        "action": "query",
-        "list": "categorymembers",
-        "cmtitle": "Category:敌人",
-        "cmlimit": 500,
-        "format": "json",
-    }
+    """通过 PRTS API Category 获取敌人列表。
+
+    分页由 fetch_category_members 负责：带 continue.cmcontinue 翻到结束，
+    命中页数上限时打印告警。旧实现固定只循环 10 次（最多 5000 条），
+    超出部分既不告警也不区分，会被下游 diff 误判为「PRTS 上已移除」。
+    """
     names = []
-    # 可能需要翻页
-    for _ in range(10):  # 最多 5000 个敌人
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        data = resp.json()
-        members = data.get("query", {}).get("categorymembers", [])
-        for m in members:
-            title = m["title"].strip()
-            if title.startswith(("Category:", "File:", "模板:")):
-                continue
-            if any(c in title for c in ("/", "(", ")", ";", "{", "}")):
-                continue
-            if len(title) < 1 or len(title) > 30:
-                continue
-            names.append(title)
-        # 翻页
-        if "continue" in data:
-            params["cmcontinue"] = data["continue"]["cmcontinue"]
-        else:
-            break
+    for title in fetch_category_members("Category:敌人", headers=HEADERS):
+        title = title.strip()
+        if title.startswith(("Category:", "File:", "模板:")):
+            continue
+        if any(c in title for c in ("/", "(", ")", ";", "{", "}")):
+            continue
+        if len(title) < 1 or len(title) > 30:
+            continue
+        names.append(title)
 
     return sorted(names)
 
@@ -87,6 +74,7 @@ def get_enemy_wikitext(name: str) -> "Optional[str]":
     }
     try:
         resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
         data = resp.json()
         return data["parse"]["wikitext"]["*"]
     except Exception as e:

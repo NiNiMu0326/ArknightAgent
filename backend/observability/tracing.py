@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import time
+import uuid
 from typing import Dict
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,19 @@ if not hasattr(asyncio, "to_thread"):
     asyncio.to_thread = _to_thread
 
 _langfuse_client = None
+
+
+def _unique_trace_suffix() -> str:
+    """trace id 的唯一后缀：毫秒时间戳 + uuid 片段（同毫秒内也不重复）。"""
+    return f"{int(time.time() * 1000):x}{uuid.uuid4().hex[:8]}"
+
+
+def _flush_client(client) -> None:
+    """同步 flush LangFuse 客户端（阻塞网络 I/O）；失败必须留下日志。"""
+    try:
+        client.flush()
+    except Exception as e:
+        logger.warning(f"Failed to flush LangFuse client: {e}", exc_info=True)
 
 
 def get_langfuse_client():
@@ -52,7 +66,11 @@ def get_langfuse_client():
 
 
 class AgentTrace:
-    """Manages a single agent conversation trace."""
+    """Manages a single agent run (= one user message) inside a session.
+
+    同一 session 的多轮对话各自拥有一条 trace（id 带唯一后缀）；按会话查看时
+    用 trace 的 sessionId / metadata.session_id 归组。
+    """
 
     def __init__(self, session_id: str, user_message: str, model_id: str):
         self.session_id = session_id
@@ -66,16 +84,32 @@ class AgentTrace:
 
         client = get_langfuse_client()
         if client:
+            # trace id 必须「每条用户消息」唯一：session 会跨多轮复用，id 写死成
+            # agent-{session_id} 时同会话多轮会命中 LangFuse 的同 id 合并，后一轮的
+            # output/metadata 直接覆盖前一轮，可观测数据只剩最后一条。
+            # 保留 `agent-{session_id}` 前缀，同时把 session_id 写进 metadata 与
+            # LangFuse 的 sessionId 字段，归属过滤（main.py 的 _langfuse_session_of）
+            # 仍可按会话解析。
+            trace_id = f"agent-{session_id}-{_unique_trace_suffix()}"
+            trace_kwargs = {
+                "id": trace_id,
+                "name": "agent-conversation",
+                "metadata": {
+                    "session_id": session_id,
+                    "model": model_id,
+                },
+                "input": user_message[:500],
+            }
             try:
-                self.trace = client.trace(
-                    id=f"agent-{session_id}",
-                    name="agent-conversation",
-                    metadata={
-                        "session_id": session_id,
-                        "model": model_id,
-                    },
-                    input=user_message[:500],
-                )
+                # session_id 是 LangFuse 一等字段：写入后 trace 列表可直接按会话过滤
+                self.trace = client.trace(session_id=session_id, **trace_kwargs)
+            except TypeError:
+                # 兼容不接受 session_id 参数的旧版 SDK
+                try:
+                    self.trace = client.trace(**trace_kwargs)
+                except Exception as e:
+                    logger.warning(f"Failed to create LangFuse trace: {e}")
+                    self.trace = None
             except Exception as e:
                 logger.warning(f"Failed to create LangFuse trace: {e}")
                 self.trace = None
@@ -96,15 +130,24 @@ class AgentTrace:
                 "round": round_num,
                 "messages_count": messages_count,
                 "tool_calls_count": tool_calls_count,
+                "latency_ms": round(latency_ms),
             }
             if error:
                 metadata["error"] = error
 
+            # 用本轮真实耗时反推 start_time：写死 self.start_time（会话开始时间）
+            # 会让每个 generation 的时长等于"会话开始 → 本轮结束"，轮数越多越失真。
+            end_time = time.time()
+            if latency_ms and latency_ms > 0:
+                start_time = max(end_time - latency_ms / 1000.0, self.start_time)
+            else:
+                start_time = self.start_time
+
             self.trace.generation(
                 name=f"llm-round-{round_num}",
                 model=model or self.model_id,
-                start_time=self.start_time,
-                end_time=time.time(),
+                start_time=start_time,
+                end_time=end_time,
                 usage={
                     "input": input_tokens,
                     "output": output_tokens,
@@ -146,11 +189,11 @@ class AgentTrace:
         except Exception as e:
             logger.warning(f"Failed to record LangFuse span: {e}")
 
-    def end(self, total_rounds: int = 0, total_time_ms: float = 0,
-            answer_length: int = 0, error: str = ""):
-        """End the trace with final metadata."""
+    def _apply_final_update(self, total_rounds: int = 0, total_time_ms: float = 0,
+                            answer_length: int = 0, error: str = "") -> bool:
+        """把最终统计写进 trace；返回是否存在 trace（决定后续是否需要 flush）。"""
         if not self.trace:
-            return
+            return False
 
         try:
             self.trace.update(
@@ -167,15 +210,45 @@ class AgentTrace:
                 },
             )
         except Exception as e:
-            logger.warning(f"Failed to update LangFuse trace: {e}")
+            logger.warning(f"Failed to update LangFuse trace: {e}", exc_info=True)
+        return True
 
-        # Flush to ensure data is sent
+    def _schedule_flush(self) -> None:
+        """触发 flush，但不阻塞事件循环。
+
+        ``client.flush()`` 会阻塞等待队列数据发送完（网络 I/O）。``end()`` 经常被
+        async 生成器直接调用，同步 flush 会卡住整个事件循环，所以检测到运行中的
+        事件循环时把 flush 丢到线程池；没有事件循环的同步调用方才直接 flush。
+        """
+        client = get_langfuse_client()
+        if not client:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _flush_client(client)
+            return
+        try:
+            loop.run_in_executor(None, _flush_client, client)
+        except Exception as e:
+            logger.warning(f"Failed to schedule LangFuse flush: {e}", exc_info=True)
+
+    def end(self, total_rounds: int = 0, total_time_ms: float = 0,
+            answer_length: int = 0, error: str = "") -> None:
+        """End the trace with final metadata（同步调用方用；async 调用方见 aend）。"""
+        if not self._apply_final_update(total_rounds, total_time_ms, answer_length, error):
+            return
+        # Flush to ensure data is sent（事件循环内不阻塞，见 _schedule_flush）
+        self._schedule_flush()
+
+    async def aend(self, total_rounds: int = 0, total_time_ms: float = 0,
+                   answer_length: int = 0, error: str = "") -> None:
+        """``end()`` 的 await 版本：flush 在线程池里执行完才返回。"""
+        if not self._apply_final_update(total_rounds, total_time_ms, answer_length, error):
+            return
         client = get_langfuse_client()
         if client:
-            try:
-                client.flush()
-            except Exception:
-                pass
+            await asyncio.to_thread(_flush_client, client)
 
 
 # ── LangFuse Public API client ──────────────────────────────────────────────
@@ -325,6 +398,31 @@ async def fetch_langfuse_trace_detail(trace_id: str) -> dict:
         return {"error": f"获取 LangFuse trace 详情失败: {e}"}
 
 
+async def _resolve_owner_from_session(session_id: str) -> int:
+    """从会话表读出该 trace 所属会话的属主；未知返回 0（= 归属未知）。"""
+    try:
+        from backend.db import get_db
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                "SELECT user_id FROM agent_session_store WHERE session_id=?",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+        finally:
+            await db.close()
+    except Exception as exc:
+        logger.warning(f"[TRACE] Failed to resolve owner for session={session_id}: {exc}")
+        return 0
+
+    if row is None or row["user_id"] is None:
+        return 0
+    try:
+        return int(row["user_id"])
+    except (TypeError, ValueError):
+        return 0
+
+
 async def save_trace_to_db(
     session_id: str,
     user_message: str,
@@ -337,23 +435,39 @@ async def save_trace_to_db(
     answer_length: int,
     status: str = "success",
     error: str = "",
+    user_id: int = None,
 ):
-    """Save a completed agent trace to the local SQLite database."""
+    """Save a completed agent trace to the local SQLite database.
+
+    ``user_id`` 为 None 时按会话表推断属主；推断不出就写 NULL，语义是
+    「归属未知」，读取侧对未知归属按拒绝处理（fail-closed，不会误放行）。
+    """
     try:
         from backend.db import get_db
+        if user_id is None:
+            user_id = await _resolve_owner_from_session(session_id)
         db = await get_db()
         try:
             await db.execute(
                 """INSERT INTO traces (session_id, user_message, model_id, total_rounds,
                    total_time_ms, total_llm_calls, total_tool_calls, total_tokens,
-                   answer_length, status, error)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   answer_length, status, error, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (session_id, user_message[:500], model_id, total_rounds, total_time_ms,
-                 total_llm_calls, total_tool_calls, total_tokens, answer_length, status, error)
+                 total_llm_calls, total_tool_calls, total_tokens, answer_length, status, error,
+                 user_id or None)
             )
             await db.commit()
+        except Exception:
+            # 写失败必须先回滚：否则未提交的事务会一直挂在这个连接上，
+            # 连接归还/复用时把后续写入一起拖下水。
+            try:
+                await db.rollback()
+            except Exception as rollback_exc:
+                logger.warning(f"[TRACE] Rollback failed: {rollback_exc}", exc_info=True)
+            raise
         finally:
             await db.close()
-        logger.info(f"[TRACE] Saved trace for session={session_id} status={status}")
+        logger.info(f"[TRACE] Saved trace for session={session_id} user={user_id} status={status}")
     except Exception as e:
-        logger.warning(f"[TRACE] Failed to save trace to DB: {e}")
+        logger.warning(f"[TRACE] Failed to save trace to DB: {e}", exc_info=True)

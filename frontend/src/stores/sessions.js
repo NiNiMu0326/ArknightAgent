@@ -37,9 +37,10 @@ export const useSessionStore = defineStore('sessions', () => {
     if (authStore.isLoggedIn) {
       try {
         const res = await api.listConversations()
-        const newSessions = {}
-        for (const conv of res.conversations) {
+        // 并发拉取各会话消息：逐个 await 是 N+1 串行请求，首屏耗时会随会话数线性增长
+        const loaded = await Promise.all(res.conversations.map(async conv => {
           let messages = []
+          let loadFailed = false
           try {
             const msgRes = await api.getConversationMessages(conv.session_id)
             messages = msgRes.messages.map(m => ({
@@ -49,16 +50,25 @@ export const useSessionStore = defineStore('sessions', () => {
               ...(m.metadata || {})
             }))
           } catch (e) {
+            // 保留失败标记：单个会话拉取失败不能静默当成空会话
+            loadFailed = true
             console.warn(`Failed to load messages for ${conv.session_id}:`, e)
           }
-          newSessions[conv.session_id] = {
+          return {
             id: conv.session_id,
-            name: conv.name,
-            messages,
-            createdAt: new Date(conv.created_at).getTime(),
-            updatedAt: new Date(conv.updated_at).getTime(),
+            session: {
+              id: conv.session_id,
+              name: conv.name,
+              messages,
+              createdAt: new Date(conv.created_at).getTime(),
+              updatedAt: new Date(conv.updated_at).getTime(),
+              ...(loadFailed ? { messagesLoadFailed: true } : {}),
+            }
           }
-        }
+        }))
+        // 按服务端返回顺序写入，避免并发完成顺序影响会话列表顺序
+        const newSessions = {}
+        loaded.forEach(({ id, session }) => { newSessions[id] = session })
         sessions.value = newSessions
       } catch (e) {
         console.warn('Failed to load sessions from server, falling back to localStorage:', e)
@@ -99,16 +109,50 @@ export const useSessionStore = defineStore('sessions', () => {
   // 避免每次都全量序列化并请求 /conversations/sync
   let serverSyncTimer = null
   let pendingServerSyncPayload = null
+  let pendingServerSyncToken = null  // payload 归属的登录身份，防止登出/换号后旧 payload 落到新账号
+
+  // 撤销尚未触发的去抖同步。删除会话时若旧 payload 仍在窗口内照常发出，
+  // 会把刚删掉的会话重新 upsert 回服务端（数据复活），因此删除前必须主动丢弃。
+  function cancelPendingServerSync() {
+    if (serverSyncTimer) {
+      clearTimeout(serverSyncTimer)
+      serverSyncTimer = null
+    }
+    pendingServerSyncPayload = null
+    pendingServerSyncToken = null
+  }
+
+  // 正在删除中的会话 id。deleteSession 是跨 await 的长流程（删除 agent 会话 + 服务端会话），
+  // 期间流式回调等并发路径仍会调用 saveSessions()，而那时被删会话还在 sessions.value 里。
+  // 服务端 /conversations/sync 只做 upsert、从不删除，所以只要有一份含被删会话的 payload
+  // 在 DELETE 生效之后到达，会话就会被永久复活——仅靠 cancelPendingServerSync() 不够，
+  // 去抖计时器可能在 800ms 后、DELETE 落地前就已经触发。这里把这些会话从同步快照里剔除。
+  const deletingSessionIds = new Set()
+
+  function _withoutDeletingSessions(sessionsObj) {
+    if (deletingSessionIds.size === 0) return sessionsObj
+    const filtered = {}
+    Object.keys(sessionsObj).forEach(id => {
+      if (!deletingSessionIds.has(id)) filtered[id] = sessionsObj[id]
+    })
+    return filtered
+  }
 
   function scheduleServerSync(payload) {
+    const auth = useAuthStore()
     pendingServerSyncPayload = payload
+    pendingServerSyncToken = auth.token
     if (serverSyncTimer) return
     serverSyncTimer = setTimeout(async () => {
       serverSyncTimer = null
       const toSync = pendingServerSyncPayload
+      const ownerToken = pendingServerSyncToken
       pendingServerSyncPayload = null
+      pendingServerSyncToken = null
+      if (!toSync) return
       const auth = useAuthStore()
-      if (!auth.isLoggedIn) return
+      // 已登出或已切换账号：旧 payload 不再属于当前身份，直接丢弃
+      if (!auth.isLoggedIn || auth.token !== ownerToken) return
       try {
         await api.syncConversations(toSync)
       } catch (e) {
@@ -139,7 +183,8 @@ export const useSessionStore = defineStore('sessions', () => {
     const authStore = useAuthStore()
     if (authStore.isLoggedIn) {
       try {
-        scheduleServerSync(_serializeSessionsForSync(toSave))
+        // 剔除「删除中」的会话：否则它们的旧快照会被 upsert 回服务端（删除无法撤销 upsert）
+        scheduleServerSync(_serializeSessionsForSync(_withoutDeletingSessions(toSave)))
       } catch (e) {
         console.warn('Failed to serialize sessions for server sync:', e)
       }
@@ -184,33 +229,55 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   async function deleteSession(sessionId) {
-    // Delete backend agent session
-    const backendId = backendSessionIds.value[sessionId]
-    if (backendId) {
-      try { await api.deleteAgentSession(backendId) } catch (e) { console.warn('Failed to delete backend session:', e) }
-      delete backendSessionIds.value[sessionId]
-      localStorage.setItem('arknights_rag_backend_sessions', JSON.stringify(backendSessionIds.value))
-    }
+    // 删除会话是一段跨两个 await 的临界区，这里要取消**两次**去抖同步：
+    //
+    // 第一次（此处）：清掉进入删除流程前已经排队的那份快照——它必然还含待删会话，
+    // 若照常发出就会把会话 upsert 回服务端。
+    cancelPendingServerSync()
 
-    // Delete from server if logged in
-    const authStore = useAuthStore()
-    if (authStore.isLoggedIn) {
-      try { await api.deleteConversation(sessionId) } catch (e) { console.warn('Failed to delete conversation from server:', e) }
-    }
-
-    delete sessions.value[sessionId]
-    if (currentSessionId.value === sessionId) {
-      const remaining = Object.keys(sessions.value).sort(
-        (a, b) => sessions.value[b].updatedAt - sessions.value[a].updatedAt
-      )
-      if (remaining.length > 0) {
-        currentSessionId.value = remaining[0]
-      } else {
-        createNewSession()
+    // 兜底标记：窗口期内任何并发 saveSessions() 生成的 payload 都不再带上该会话。
+    // 只靠两次 cancelPendingServerSync() 仍不够——去抖计时器可能在 800ms 后、
+    // DELETE 落地之前就已经触发（实测删除耗时 1.2s 时会稳定命中），此时 payload 已经发出，
+    // 只能靠「快照里根本没有这个会话」来保证服务端不会被 upsert 复活它。
+    deletingSessionIds.add(sessionId)
+    try {
+      // Delete backend agent session
+      const backendId = backendSessionIds.value[sessionId]
+      if (backendId) {
+        try { await api.deleteAgentSession(backendId) } catch (e) { console.warn('Failed to delete backend session:', e) }
+        delete backendSessionIds.value[sessionId]
+        localStorage.setItem('arknights_rag_backend_sessions', JSON.stringify(backendSessionIds.value))
       }
-    }
-    if (lastActiveSessionId.value === sessionId) {
-      lastActiveSessionId.value = currentSessionId.value
+
+      // Delete from server if logged in
+      const authStore = useAuthStore()
+      if (authStore.isLoggedIn) {
+        try { await api.deleteConversation(sessionId) } catch (e) { console.warn('Failed to delete conversation from server:', e) }
+      }
+
+      // 第二次（所有 await 之后、改动本地状态之前）：上面两个 await 期间并发的
+      // saveSessions() 会重新排入一份仍含待删会话的快照，这里再清一次，
+      // 确保它不会在本次删除落地之后被发出。
+      // 末尾的 saveSessions() 会用删除后的最新全量状态重新排队，不会丢数据。
+      cancelPendingServerSync()
+
+      delete sessions.value[sessionId]
+      if (currentSessionId.value === sessionId) {
+        const remaining = Object.keys(sessions.value).sort(
+          (a, b) => sessions.value[b].updatedAt - sessions.value[a].updatedAt
+        )
+        if (remaining.length > 0) {
+          currentSessionId.value = remaining[0]
+        } else {
+          createNewSession()
+        }
+      }
+      if (lastActiveSessionId.value === sessionId) {
+        lastActiveSessionId.value = currentSessionId.value
+      }
+    } finally {
+      // 无论删除是否成功都解除标记，避免该会话被永久排除在同步之外
+      deletingSessionIds.delete(sessionId)
     }
     saveSessions()
     return true
@@ -455,7 +522,8 @@ export const useSessionStore = defineStore('sessions', () => {
 
     if (Object.keys(toSave).length > 0) {
       try {
-        await api.syncConversations(_serializeSessionsForSync(toSave))
+        // 同样剔除「删除中」的会话，避免合并时把正在删除的会话 upsert 回去
+        await api.syncConversations(_serializeSessionsForSync(_withoutDeletingSessions(toSave)))
       } catch (e) {
         console.warn('Failed to merge local sessions to server:', e)
       }

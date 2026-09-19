@@ -5,6 +5,10 @@ on:
     branches: [master]
   workflow_dispatch: # 允许在 GitHub 页面手动触发
 
+# 最小权限：本工作流只做 checkout + 测试 + SSH 部署，不需要写仓库内容
+permissions:
+  contents: read
+
 # 防止多次 push 导致部署互相覆盖
 concurrency:
   group: production-deploy
@@ -14,12 +18,13 @@ jobs:
   test:
     name: 后端测试
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # 依赖安装/测试卡住时不要长期占用 runner
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
@@ -35,26 +40,33 @@ jobs:
     name: 部署到服务器
     needs: test # 测试通过才部署
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # SSH 挂起 / uv 安装 / 前端构建卡住时的兜底
     steps:
       # 部署统一交给 systemd（arknights-rag.service，Restart=always）：
       # 不用 pkill + nohup——会与 systemd 的自动重启冲突，产生两个 uvicorn 进程抢端口。
       # git 用 fetch + reset --hard 而不是 pull：服务器上 cron 每日同步会改动
-      # Scripts/*_log.txt、npm install 会改动 package-lock.json，pull 必然冲突失败。
+      # Scripts/*_log.txt，pull 必然冲突失败（改用 npm ci 后不再改写 package-lock.json）。
       - name: SSH 拉取代码并构建前端
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           port: ${{ secrets.SERVER_PORT }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            set -e
+            set -euo pipefail
             cd /srv/projects/arknights-rag
-            git fetch origin master
-            git reset --hard origin/master
+            # 固定到本次触发（已通过 test）的提交，而不是 origin/master：
+            # concurrency 只保证同一时刻只有一个 run 在执行，排队中的 run 开始执行时
+            # origin/master 可能已被更新的 push 推进，直接用 origin/master 会把
+            # 未经测试的代码部署上线，破坏 needs: test 的守护意义。
+            git fetch --prune origin master
+            git checkout --force master
+            git reset --hard ${{ github.sha }}
             export PATH="$HOME/.local/bin:$PATH"
             if ! command -v uv >/dev/null 2>&1; then
-              curl -LsSf https://astral.sh/uv/install.sh | sh
+              # 固定 uv 版本：未固定版本的远端脚本被篡改时可在服务器上执行任意代码
+              curl -LsSf https://astral.sh/uv/0.12.17/install.sh | sh
               export PATH="$HOME/.local/bin:$PATH"
             fi
             if [ ! -x .venv/bin/python ]; then
@@ -63,26 +75,47 @@ jobs:
             fi
             uv pip install --python .venv/bin/python -r backend/requirements.txt
             cd frontend
-            npm install
+            # npm ci 严格按 package-lock.json 安装且不改写锁文件（npm install 会改写，
+            # 正是注释里提到的 pull 冲突来源）；若 package.json 与 lock 不同步它会报错
+            npm ci
             npm run build
             # 同步构建产物到 nginx 静态根目录（前端由 nginx 从 /var/www/arknights 直接伺服，
             # 缺了这一步新前端永远不会生效，/agent 等 API 路径才走 uvicorn）
+            DIST_DIR=/srv/projects/arknights-rag/frontend/dist
+            # rsync --delete 在 dist 缺失/为空时会把线上静态目录整个删空，先校验产物存在
+            if [ ! -f "$DIST_DIR/index.html" ] || [ -z "$(ls -A "$DIST_DIR")" ]; then
+              echo "构建产物缺失或为空：$DIST_DIR，终止部署以免清空 /var/www/arknights"
+              exit 1
+            fi
             mkdir -p /var/www/arknights
-            rsync -a --delete /srv/projects/arknights-rag/frontend/dist/ /var/www/arknights/
+            rsync -a --delete "$DIST_DIR/" /var/www/arknights/
 
       - name: SSH 重启服务并健康检查
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           port: ${{ secrets.SERVER_PORT }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            # set -e：systemctl restart 失败必须中断，不能继续检查旧进程的健康状态
+            set -euo pipefail
             systemctl restart arknights-rag
+            healthy=0
             for i in $(seq 1 6); do
-              curl -fsS http://localhost:8889/health && break
+              # --max-time 防止 curl 挂死；循环体最后一条不再是 sleep，
+              # 否则 6 次全部失败时循环仍以 0 退出，失败部署会显示成绿色成功
+              if curl -fsS --max-time 5 http://localhost:8889/health; then
+                healthy=1
+                break
+              fi
               sleep 5
             done
+            if [ "$healthy" -ne 1 ]; then
+              echo "健康检查失败：http://localhost:8889/health 重试 6 次仍不可用"
+              systemctl status arknights-rag --no-pager -l | tail -n 50 || true
+              exit 1
+            fi
 
       - name: 外部健康检查
-        run: curl -fsS --max-time 15 https://ninimu.top:14606/health
+        run: curl -fsS --max-time 15 --retry 3 --retry-delay 5 --retry-all-errors https://ninimu.top:14606/health

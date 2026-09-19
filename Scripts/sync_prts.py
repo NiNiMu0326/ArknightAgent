@@ -37,7 +37,7 @@ sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from scraper import parse_operator
-from common import PRTS_HEADERS
+from common import PRTS_HEADERS, fetch_category_members
 
 
 # ===================== 日志 =====================
@@ -62,24 +62,18 @@ def log(msg: str):
 # ===================== 工具 =====================
 
 def get_operator_list_from_api() -> list:
-    """通过 PRTS API 获取干员列表（比解析 HTML CSV 更可靠）。"""
-    import requests
-    url = "https://prts.wiki/api.php"
-    params = {
-        "action": "query",
-        "list": "categorymembers",
-        "cmtitle": "Category:干员",
-        "cmlimit": 500,
-        "format": "json",
-    }
-    resp = requests.get(url, params=params, headers=PRTS_HEADERS, timeout=15)
-    data = resp.json()
-    members = data.get("query", {}).get("categorymembers", [])
+    """通过 PRTS API 获取干员列表（比解析 HTML CSV 更可靠）。
+
+    分页交给 fetch_category_members：旧实现只请求第一页（cmlimit=500）且不处理
+    continue.cmcontinue，干员数超过单页上限时列表被静默截断，后续 diff 会把
+    没拉到的干员误判为「已移除」，也漏爬新增。
+    """
+    members = fetch_category_members("Category:干员", headers=PRTS_HEADERS)
 
     # 过滤：排除 Category/File 前缀，去掉模板/汇总页等非独立干员页
     names = []
-    for m in members:
-        title = m["title"].strip()
+    for title in members:
+        title = title.strip()
         if title.startswith(("Category:", "File:", "模板:", "帮助:", "PRTS:")):
             continue
         # 排除含代码字符的垃圾条目
@@ -113,9 +107,15 @@ def get_operator_list_from_api() -> list:
 
 
 def _filter_redirects(names: list) -> list:
-    """批量查询 PRTS API，排除重定向页面。"""
+    """批量查询 PRTS API，排除重定向页面。
+
+    异常分支不再无脑 `filtered.extend(batch)`：那会把本批里已经成功解析出来的
+    条目重复 append 一次（prts_names 数量虚高、下游可能重复爬取），还会把本该
+    剔除的重定向页重新放回。只有本批一条都没解析成功时才整批回退，并记录日志。
+    """
     import requests
     filtered = []
+    seen = set()
     batch_size = 50
     for i in range(0, len(names), batch_size):
         batch = names[i:i + batch_size]
@@ -127,8 +127,10 @@ def _filter_redirects(names: list) -> list:
             "redirects": "",
             "format": "json",
         }
+        batch_parsed = []
         try:
             resp = requests.get(url, params=params, headers=PRTS_HEADERS, timeout=15)
+            resp.raise_for_status()  # 5xx/429 不能当成「整批都不是重定向」
             data = resp.json()
             # 获取重定向映射: redirect_from → redirect_to
             redirects = {}
@@ -138,9 +140,21 @@ def _filter_redirects(names: list) -> list:
             for pid, page in pages.items():
                 title = page.get("title", "")
                 if int(pid) > 0 and title and title not in redirects:
-                    filtered.append(page["title"])
-        except Exception:
-            filtered.extend(batch)
+                    batch_parsed.append(page["title"])
+        except Exception as e:
+            log(f"  ⚠ 重定向过滤失败（批次 {i // batch_size + 1}，"
+                f"{len(batch)} 条）: {type(e).__name__}: {e}")
+
+        if not batch_parsed:
+            # 整批都没解析成功（API 异常）：回退原始 titles，避免静默丢干员
+            log(f"  ⚠ 批次 {i // batch_size + 1} 无任何有效解析结果，"
+                f"回退原始 {len(batch)} 条（重定向页可能残留）")
+            batch_parsed = batch
+
+        for title in batch_parsed:
+            if title not in seen:  # 去重：同一名字只保留一次
+                seen.add(title)
+                filtered.append(title)
     return filtered
 
 

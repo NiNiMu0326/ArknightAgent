@@ -7,7 +7,7 @@
 用法:
   python Scripts/lore_sync.py                # 增量同步
   python Scripts/lore_sync.py --dry-run       # 只检测
-  python Scripts/lore_sync.py --full          # 全量更新（清空本地后重下所有）
+  python Scripts/lore_sync.py --full          # 全量重下角色（stories 仍走增量）
 """
 
 import os
@@ -190,6 +190,8 @@ def sync_files(
 
     Returns:
         (downloaded_count, skipped_count)
+        downloaded_count 只统计**真正下载成功并写盘**的数量（下载失败不计入，
+        否则上层会据虚高的计数用残缺内容覆盖索引）；dry_run 时返回检出的待下载数量。
     """
     local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -200,6 +202,9 @@ def sync_files(
     if not new_names:
         return 0, len(remote_names & local_names)
 
+    downloaded = 0
+    failed: List[str] = []
+
     for i, fname in enumerate(new_names):
         log(f"  [{i+1}/{len(new_names)}] + {fname}")
         if dry_run:
@@ -209,6 +214,7 @@ def sync_files(
         content = download_file(remote_path)
         if content is None:
             log(f"    ✗ 下载失败")
+            failed.append(fname)
             continue
 
         content = clean_wiki_md(content)
@@ -216,9 +222,78 @@ def sync_files(
         with open(local_path, "w", encoding="utf-8") as f:
             f.write(content)
 
+        downloaded += 1
         time.sleep(0.1)  # GitHub API 限速
 
-    return len(new_names), len(remote_names & local_names)
+    if failed:
+        log(f"  ⚠ {len(failed)}/{len(new_names)} 个文件下载失败: "
+            f"{', '.join(failed[:5])}{' ...' if len(failed) > 5 else ''}")
+
+    # dry_run 未实际下载，保持「检出数量」语义
+    return (len(new_names) if dry_run else downloaded), len(remote_names & local_names)
+
+
+def full_sync_dir(remote_dir: str, local_dir: Path) -> Optional[Tuple[int, int]]:
+    """全量同步：先把远程文件全部下载到临时目录，全部成功后再整体替换本地目录。
+
+    不做「先删本地再拉远程」：远程清单拉取失败/为空、或存在下载失败时直接放弃替换，
+    本地原数据保持原样，避免网络异常时本地数据被清空后无法恢复。
+
+    Returns:
+        (downloaded, skipped) 或 None（放弃替换，本地保持原样）
+    """
+    remote_names = fetch_remote_names(remote_dir)
+    if not remote_names:
+        log(f"  ✗ 远程目录 {remote_dir} 清单为空或拉取失败，取消全量替换，保留本地数据")
+        return None
+
+    tmp_dir = local_dir.parent / f".{local_dir.name}.tmp"
+    backup_dir = local_dir.parent / f".{local_dir.name}.bak"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = 0
+    failed: List[str] = []
+
+    for i, fname in enumerate(sorted(remote_names)):
+        log(f"  [{i+1}/{len(remote_names)}] ↓ {fname}")
+        content = download_file(f"{remote_dir}/{fname}")
+        if content is None:
+            log(f"    ✗ 下载失败")
+            failed.append(fname)
+            continue
+
+        with open(tmp_dir / fname, "w", encoding="utf-8") as f:
+            f.write(clean_wiki_md(content))
+
+        downloaded += 1
+        time.sleep(0.1)  # GitHub API 限速
+
+    if failed:
+        log(f"  ✗ {len(failed)}/{len(remote_names)} 个文件下载失败"
+            f"（如 {', '.join(failed[:3])}），取消全量替换，保留本地数据")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    # 整体替换：旧目录先改名备份，替换成功后再删除备份
+    shutil.rmtree(backup_dir, ignore_errors=True)
+    try:
+        if local_dir.exists():
+            local_dir.rename(backup_dir)
+        tmp_dir.rename(local_dir)
+    except OSError as e:
+        log(f"  ✗ 替换目录失败: {e}")
+        try:
+            if not local_dir.exists() and backup_dir.exists():
+                backup_dir.rename(local_dir)  # 回滚，保证本地数据不丢
+        except OSError as e2:
+            log(f"    ⚠ 回滚失败，旧数据仍保留在 {backup_dir}: {e2}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    shutil.rmtree(backup_dir, ignore_errors=True)
+    log(f"  ✓ 已全量替换 {local_dir}（{downloaded} 个文件）")
+    return downloaded, len(remote_names) - downloaded
 
 
 def sync_index_file(remote_name: str, local_path: Path, dry_run: bool = False) -> bool:
@@ -249,13 +324,18 @@ def sync_lore(dry_run: bool = False, full: bool = False) -> dict:
 
     result = {"stories": 0, "chars": 0, "indexes": 0}
 
-    # --- 全量模式：只清空 operators（stories 保留增量）---
+    # --- 全量模式：只重下 operators（stories 保留增量）---
+    # 不再先清空本地：先把角色全部下载到临时目录，成功后再整体替换本地目录，
+    # 远程清单为空或下载有失败时保持本地原样，避免「已清空但没拉下来」的不可恢复丢失。
+    full_chars_replaced = False
     if full and not dry_run:
-        log("全量模式：清空 operators 目录...")
-        if LOCAL_CHARS_DIR.exists():
-            shutil.rmtree(LOCAL_CHARS_DIR)
-        LOCAL_CHARS_DIR.mkdir(parents=True, exist_ok=True)
-        log("  已清空 data/operators/")
+        log("全量模式：重新下载全部角色...")
+        replaced = full_sync_dir("docs/char_v3", LOCAL_CHARS_DIR)
+        if replaced is None:
+            log("  ✗ 全量替换未完成，data/operators/ 保持原样")
+        else:
+            full_chars_replaced = True
+            result["chars"] = replaced[0]
 
     # --- 1. 剧情 ---
     log("\n[剧情] docs/stories/")
@@ -264,14 +344,17 @@ def sync_lore(dry_run: bool = False, full: bool = False) -> dict:
     log(f"  新增: {new_stories}")
 
     # --- 2. 角色 ---
-    log("\n[角色] docs/char_v3/")
-    new_chars, _ = sync_files("docs/char_v3", LOCAL_CHARS_DIR, dry_run)
-    result["chars"] = new_chars
-    log(f"  新增: {new_chars}")
+    if full_chars_replaced:
+        log("\n[角色] docs/char_v3/ 已全量替换，跳过增量")
+    else:
+        log("\n[角色] docs/char_v3/")
+        new_chars, _ = sync_files("docs/char_v3", LOCAL_CHARS_DIR, dry_run)
+        result["chars"] = new_chars
+        log(f"  新增: {new_chars}")
 
     # --- 3. 索引（有新文件时替换，或全量时强制替换）---
     log("\n[索引]")
-    has_changes = new_stories > 0 or new_chars > 0 or full
+    has_changes = new_stories > 0 or result["chars"] > 0 or full
 
     if has_changes or full:
         if sync_index_file("story_index.md", LOCAL_STORY_INDEX, dry_run):
@@ -289,7 +372,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="剧情 Wiki 增量同步")
     parser.add_argument("--dry-run", action="store_true", help="只检测，不下载")
-    parser.add_argument("--full", action="store_true", help="全量更新（清空本地后重下所有）")
+    parser.add_argument("--full", action="store_true",
+                        help="全量更新（重新下载全部角色到临时目录后整体替换；stories 仍为增量）")
     args = parser.parse_args()
 
     if args.dry_run and args.full:

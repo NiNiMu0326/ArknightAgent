@@ -45,10 +45,10 @@
             <span>{{ selectedChunk.lines }} 行</span>
             <span>{{ selectedChunk.tokens }} tokens</span>
           </div>
-          <div class="chunk-nav-inline" v-if="chunks.length && !loadingChunks">
+          <div class="chunk-nav-inline" v-if="displayedChunks.length && !loadingChunks">
             <button class="btn btn-small" @click="navigateChunk(-1)">&lt;</button>
-            <input type="number" class="chunk-nav-input" v-model="chunkNavInput" min="1" :max="chunks.length" @keypress.enter="jumpToChunk">
-            <span class="chunk-nav-info">/ {{ chunks.length }}</span>
+            <input type="number" class="chunk-nav-input" v-model="chunkNavInput" min="1" :max="displayedChunks.length" @keypress.enter="jumpToChunk">
+            <span class="chunk-nav-info">/ {{ displayedChunks.length }}</span>
             <button class="btn btn-small" @click="navigateChunk(1)">&gt;</button>
           </div>
           <div class="chunk-nav-inline" v-else-if="loadingChunks">
@@ -84,6 +84,28 @@ const chunkNavInput = ref(1)
 let chunksRequestSeq = 0
 let contentRequestSeq = 0
 
+// 集合白名单：本组件可能被其它页面复用，防御性校验不依赖调用方（AdminView 也做了白名单）
+const COLLECTIONS = ['operators', 'stories', 'knowledge']
+function normalizeCollection(collection) {
+  return COLLECTIONS.includes(collection) ? collection : COLLECTIONS[0]
+}
+
+// 首次加载只允许发生一次：KeepAlive 下组件首次挂载时 onMounted 与 onActivated 都会触发，
+// 若 onActivated 再调用 loadChunks()，它会递增 chunksRequestSeq，把 onMounted 的深链请求
+// 判为过期丢弃（?chunk=xxx 失效、退化成选中第一项），没有深链时也会多发一次重复请求。
+// 这里「谁先跑谁负责」，后到者直接跳过。
+let initialLoadStarted = false
+
+function runInitialLoad() {
+  if (initialLoadStarted) return
+  initialLoadStarted = true
+  if (props.initialChunk) {
+    loadChunksForCollection(props.initialCollection, props.initialChunk)
+  } else {
+    loadChunks()
+  }
+}
+
 // 文档列表内联过滤：搜索框输入直接筛选下方常驻列表
 const displayedChunks = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -92,29 +114,48 @@ const displayedChunks = computed(() => {
 })
 
 onMounted(() => {
-  if (props.initialChunk) {
-    loadChunksForCollection(props.initialCollection, props.initialChunk)
-  } else {
-    loadChunks()
-  }
+  runInitialLoad()
 })
 
 // keep-alive 缓存后再次激活时重新加载chunks（仅在数据为空时加载，避免重置用户选择）
 onActivated(() => {
-  if (chunks.value.length === 0) loadChunks()
+  // 首次激活交由 onMounted（或本分支兜底）完成，不能重复发起请求
+  if (!initialLoadStarted) {
+    runInitialLoad()
+    return
+  }
+  if (chunks.value.length === 0 && !loadingChunks.value) loadChunks()
 })
 
-// 路由 query 变化（如从图谱页跳转指定 chunk）时响应
+// 路由 query 变化（如从图谱页跳转指定 chunk）时响应。
+// KeepAlive 缓存下组件不会重建，所以「只有 collection 变化、没有 chunk 参数」时同样要重载，
+// 否则列表与下拉框会和 URL 不一致。
 watch(() => [props.initialCollection, props.initialChunk], ([collection, chunk]) => {
-  if (chunk && ['operators', 'stories', 'knowledge'].includes(collection)) {
-    chunkCollection.value = collection
+  if (!COLLECTIONS.includes(collection)) return
+  if (chunk) {
     loadChunksForCollection(collection, chunk)
+    return
+  }
+  // 仅集合变化时按新集合重载（loadChunks 会清空选中态与搜索条件）；
+  // 集合没变则保持现状，不破坏 KeepAlive 保留浏览状态的初衷
+  if (collection !== chunkCollection.value) {
+    chunkCollection.value = collection
+    loadChunks()
   }
 })
 
+// chunks 当前属于哪个集合：请求失败时据此判断旧列表能否沿用
+const loadedCollection = ref(null)
+
+function resetSelection() {
+  selectedChunk.value = null
+  selectedChunkContent.value = ''
+  chunkNavInput.value = 1
+}
+
 async function loadChunks() {
   const seq = ++chunksRequestSeq
-  const collection = chunkCollection.value
+  const collection = normalizeCollection(chunkCollection.value)
   loadingChunks.value = true
   chunkSearch.value = ''
   searchQuery.value = ''
@@ -123,20 +164,21 @@ async function loadChunks() {
     if (seq !== chunksRequestSeq) return
     // 新数据到了才替换，避免中间空白
     chunks.value = newChunks
+    loadedCollection.value = collection
     if (newChunks.length > 0) {
       // 选中第一个，内容在后台异步加载
       selectChunk(newChunks[0], collection)
     } else {
-      selectedChunk.value = null
-      selectedChunkContent.value = ''
+      resetSelection()
     }
   } catch (e) {
     if (seq !== chunksRequestSeq) return
-    // 加载失败不清空已有数据
-    if (chunks.value.length === 0) {
+    console.error('Failed to load chunks:', e)
+    // 加载失败时同一集合的旧列表可以保留（避免网络抖动清空），
+    // 但已经切到别的集合还沿用旧列表的话，点击条目会用新集合请求旧 filename（404），必须清空
+    if (loadedCollection.value !== collection) {
       chunks.value = []
-      selectedChunk.value = null
-      selectedChunkContent.value = ''
+      resetSelection()
     }
   } finally {
     if (seq === chunksRequestSeq) loadingChunks.value = false
@@ -144,12 +186,18 @@ async function loadChunks() {
 }
 
 async function loadChunksForCollection(collection, targetChunk) {
+  // 入口统一校验集合（组件为公共组件，不依赖调用方白名单），并与下拉框保持同步
+  collection = normalizeCollection(collection)
+  if (chunkCollection.value !== collection) chunkCollection.value = collection
   const seq = ++chunksRequestSeq
   loadingChunks.value = true
+  chunkSearch.value = ''
+  searchQuery.value = ''
   try {
     const newChunks = await api.getChunks(collection)
     if (seq !== chunksRequestSeq) return
     chunks.value = newChunks
+    loadedCollection.value = collection
     // Extract filename part from chunk_id like "operators_char_103_angel" -> "char_103_angel"
     const filenamePart = targetChunk.replace(/^(operators|stories|knowledge)_/, '')
     const found = newChunks.find(c =>
@@ -161,10 +209,19 @@ async function loadChunksForCollection(collection, targetChunk) {
       selectChunk(found, collection)
     } else if (newChunks.length > 0) {
       selectChunk(newChunks[0], collection)
+    } else {
+      // 目标集合为空：清空选中态，否则右侧会继续显示上一个集合的文档，
+      // 后续导航还会用新 collection 去请求旧 filename 导致「加载失败」
+      resetSelection()
     }
   } catch (e) {
     if (seq !== chunksRequestSeq) return
     console.error('Failed to load chunks for direct nav:', e)
+    // 深链请求失败：列表若不属于目标集合同样要清空，避免后续跨集合请求（404）
+    if (loadedCollection.value !== collection) {
+      chunks.value = []
+      resetSelection()
+    }
   } finally {
     if (seq === chunksRequestSeq) loadingChunks.value = false
   }
@@ -184,20 +241,43 @@ async function selectChunk(chunk, collection = chunkCollection.value) {
   } finally {
     if (seq === contentRequestSeq) loadingContent.value = false
   }
-  const idx = chunks.value.findIndex(c => c.filename === chunk.filename)
+  const idx = displayedChunks.value.findIndex(c => c.filename === chunk.filename)
   if (idx >= 0) chunkNavInput.value = idx + 1
 }
 
+// 列表渲染用过滤后的 displayedChunks，导航（上/下一条、序号跳转、序号显示）也必须基于同一列表，
+// 否则搜索过滤生效时会跳到列表里看不到的条目、序号总数与列表长度对不上。
 function navigateChunk(dir) {
-  const idx = chunks.value.findIndex(c => c.filename === selectedChunk.value?.filename)
-  const newIdx = Math.max(0, Math.min(chunks.value.length - 1, idx + dir))
-  if (chunks.value[newIdx]) selectChunk(chunks.value[newIdx])
+  const list = displayedChunks.value
+  if (list.length === 0) return
+  const idx = list.findIndex(c => c.filename === selectedChunk.value?.filename)
+  // 当前选中项被搜索过滤掉（idx === -1）时：向后落到第一项，向前落到最后一项
+  const newIdx = idx < 0
+    ? (dir > 0 ? 0 : list.length - 1)
+    : Math.max(0, Math.min(list.length - 1, idx + dir))
+  if (list[newIdx]) selectChunk(list[newIdx])
 }
 
 function jumpToChunk() {
-  const idx = Math.max(0, Math.min(chunks.value.length - 1, chunkNavInput.value - 1))
-  if (chunks.value[idx]) selectChunk(chunks.value[idx])
+  const list = displayedChunks.value
+  if (list.length === 0) return
+  const n = Number(chunkNavInput.value)
+  const idx = Math.max(0, Math.min(list.length - 1, (Number.isFinite(n) && n > 0 ? n : 1) - 1))
+  if (list[idx]) selectChunk(list[idx])
 }
+
+// 搜索条件变化会改变可见列表的序号：把导航序号同步为选中项在可见列表中的位置，
+// 选中项被过滤掉时夹到可见范围内，避免出现「5 / 2」这种越界序号
+watch(displayedChunks, (list) => {
+  if (list.length === 0) return
+  const idx = selectedChunk.value
+    ? list.findIndex(c => c.filename === selectedChunk.value.filename)
+    : -1
+  const next = idx >= 0
+    ? idx + 1
+    : Math.max(1, Math.min(list.length, Number(chunkNavInput.value) || 1))
+  if (chunkNavInput.value !== next) chunkNavInput.value = next
+})
 
 const debouncedSearch = debounce(() => {
   searchQuery.value = chunkSearch.value

@@ -2,7 +2,7 @@
  * Tests for sessions store: useSessionStore.
  * Usage: cd frontend && npx vitest run test/stores/sessions.test.js
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 
 // Mock localStorage
@@ -218,6 +218,105 @@ describe('useSessionStore', () => {
       expect(store.backendSessionIds['s1']).toBeUndefined()
       // Falls back to remaining session
       expect(store.currentSessionId).toBe('s2')
+    })
+  })
+
+  describe('deleteSession 与服务端同步的竞态（T15）', () => {
+    // 服务端 POST /conversations/sync 只做 upsert、从不删除：
+    // 只要有一份「还含被删会话」的快照在 DELETE 落地之后（或删除在途期间）发出，
+    // 被删会话就会被永久复活。修复 = 删除期间用 deletingSessionIds 把该会话从同步快照里剔除。
+    afterEach(() => {
+      vi.useRealTimers()
+      api.deleteConversation.mockReset()
+      api.deleteAgentSession.mockReset()
+      api.syncConversations.mockReset()
+    })
+
+    function deferred() {
+      let resolve
+      const promise = new Promise(r => { resolve = r })
+      return { promise, resolve }
+    }
+
+    /** 预置两个非空会话，并把 s1 标成"有后端 agent 会话"，让 deleteSession 有完整的 await 链 */
+    function seedSessions(store) {
+      store.sessions = {}
+      store.currentSessionId = 's1'
+      store.sessions['s1'] = {
+        id: 's1', name: '待删会话', createdAt: 1000, updatedAt: 2000,
+        messages: [{ role: 'user', content: '要被删掉的问题', timestamp: 2000 }],
+      }
+      store.sessions['s2'] = {
+        id: 's2', name: '保留会话', createdAt: 1000, updatedAt: 3000,
+        messages: [{ role: 'user', content: '要保留的问题', timestamp: 3000 }],
+      }
+      store.backendSessionIds['s1'] = 'backend-1'
+    }
+
+    function syncedSessionIds() {
+      return api.syncConversations.mock.calls.flatMap(([payload]) =>
+        (payload || []).map(c => c.session_id)
+      )
+    }
+
+    it('删除在途 + 去抖窗口内并发 saveSessions：同步 payload 不含被删会话', async () => {
+      vi.useFakeTimers()
+      mockIsLoggedIn = true // saveSessions 只在登录态才排服务端同步
+      const store = useSessionStore()
+      await vi.advanceTimersByTimeAsync(0) // 等 loadSessions()/createNewSession() 的微任务落地
+
+      seedSessions(store)
+      const deleteApi = deferred()
+      api.deleteConversation.mockReturnValue(deleteApi.promise) // 删除挂起，制造在途窗口
+      api.deleteAgentSession.mockResolvedValue({})
+      api.syncConversations.mockResolvedValue({})
+
+      const deleting = store.deleteSession('s1')
+      await vi.advanceTimersByTimeAsync(0) // 让 deleteSession 走到 await deleteConversation
+
+      // 并发路径：流式回调 / 其它消息操作在删除在途期间调用 saveSessions()
+      store.saveSessions()
+      // 去抖窗口 800ms 到期：旧实现会把「仍含 s1」的快照 upsert 回服务端
+      await vi.advanceTimersByTimeAsync(800)
+
+      expect(api.syncConversations).toHaveBeenCalled()
+      expect(syncedSessionIds()).toContain('s2')
+      expect(syncedSessionIds()).not.toContain('s1')
+
+      deleteApi.resolve({})
+      await vi.advanceTimersByTimeAsync(0)
+      await deleting
+      // 删除落地后的收尾同步同样不能带上 s1
+      await vi.advanceTimersByTimeAsync(800)
+      expect(store.sessions['s1']).toBeUndefined()
+      expect(syncedSessionIds()).not.toContain('s1')
+    })
+
+    it('删除完成后 deletingSessionIds 被解除，同名会话后续仍能正常同步', async () => {
+      // 反向约束：剔除逻辑必须只作用于"删除在途"窗口，不能把会话永久排除在同步之外。
+      vi.useFakeTimers()
+      mockIsLoggedIn = true
+      const store = useSessionStore()
+      await vi.advanceTimersByTimeAsync(0)
+
+      seedSessions(store)
+      api.deleteConversation.mockResolvedValue({})
+      api.deleteAgentSession.mockResolvedValue({})
+      api.syncConversations.mockResolvedValue({})
+
+      await store.deleteSession('s1')
+      await vi.advanceTimersByTimeAsync(800)
+      expect(syncedSessionIds()).not.toContain('s1')
+
+      // 删除结束后 id 可被复用（新建同名会话）→ 必须能同步上去
+      api.syncConversations.mockClear()
+      store.sessions['s1'] = {
+        id: 's1', name: '同 id 新会话', createdAt: 1000, updatedAt: 4000,
+        messages: [{ role: 'user', content: '新内容', timestamp: 4000 }],
+      }
+      store.saveSessions()
+      await vi.advanceTimersByTimeAsync(800)
+      expect(syncedSessionIds()).toContain('s1')
     })
   })
 

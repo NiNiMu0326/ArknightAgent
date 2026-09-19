@@ -50,6 +50,11 @@ _THINK_OPEN_RE = _re.compile(r'<think[^>]*>', _re.IGNORECASE)
 _THINK_CLOSE_RE = _re.compile(r'</think\s*>', _re.IGNORECASE)
 _THINK_SELFCLOSE_RE = _re.compile(r'<think\s*/>', _re.IGNORECASE)
 
+# Tag starts that must be held back when they sit at the end of a chunk:
+# '<think/' and '<think ' cover the self-closing forms (<think/> and <think />);
+# without them a split right after the slash or the space leaks the tag as content.
+_THINK_PARTIAL_PREFIXES = ('<think/', '<think ', '<think')
+
 
 class ThinkTagParser:
     """Streaming parser that separates <think>...</think> blocks from plain content."""
@@ -96,7 +101,7 @@ class ThinkTagParser:
                     self._buf = self._buf[om.end():]
                     self._in_tag = True
                 else:
-                    keep = _partial_suffix_len(self._buf, '<think', 6)
+                    keep = _partial_suffix_len(self._buf, _THINK_PARTIAL_PREFIXES, 7)
                     if keep > 0:
                         if len(self._buf) > keep:
                             yield ('content', self._buf[:-keep])
@@ -113,12 +118,37 @@ class ThinkTagParser:
             self._buf = ""
 
 
-def _partial_suffix_len(s: str, prefix: str, max_len: int) -> int:
-    """If s ends with a prefix of `prefix`, return its length; else 0."""
+def _partial_suffix_len(s: str, prefixes, max_len: int) -> int:
+    """Return the length of the longest suffix of `s` that is a prefix of a candidate.
+
+    `prefixes` is either a single string or a tuple of strings ('<think' and
+    '<think/' both start a tag). The comparison is case-insensitive so a chunk
+    split inside '<THINK>' is held back too, matching _THINK_OPEN_RE /
+    _THINK_SELFCLOSE_RE which are compiled with IGNORECASE.
+    """
+    if isinstance(prefixes, str):
+        prefixes = (prefixes,)
+    lowered = s.lower()
     for n in range(min(len(s), max_len), 0, -1):
-        if prefix[:n] == s[-n:]:
+        tail = lowered[-n:]
+        if any(p[:n] == tail for p in prefixes):
             return n
     return 0
+
+
+def _merge_extra_params(payload: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
+    """Merge caller kwargs without clobbering the request protocol fields.
+
+    Every key this module set explicitly (model / messages / temperature / stream /
+    tools / thinking) wins over the same key in kwargs: a caller passing
+    ``stream=False`` would otherwise send a non-streaming request through
+    ``client.stream()``, whose ``aiter_lines()`` never sees a 'data: ' line and
+    silently yields empty content.
+    """
+    conflicts = {k for k in kwargs if k in payload}
+    if conflicts:
+        logger.warning(f"[API] 忽略与请求协议字段冲突的参数: {sorted(conflicts)}")
+    payload.update({k: v for k, v in kwargs.items() if k not in conflicts})
 
 
 class DeepSeekClient:
@@ -168,7 +198,7 @@ class DeepSeekClient:
         }
         if self.disable_thinking:
             payload["thinking"] = {"type": "disabled"}
-        payload.update(kwargs)
+        _merge_extra_params(payload, kwargs)
 
         logger.info(f"[API CHAT] POST {url} model={model} messages={len(messages)} stream=false")
 
@@ -231,7 +261,7 @@ class DeepSeekClient:
         if self.disable_thinking:
             payload["thinking"] = {"type": "disabled"}
 
-        payload.update(kwargs)
+        _merge_extra_params(payload, kwargs)
 
         logger.info(f"[API STREAM CALL] POST {url} model={model} messages={len(messages)} tools={len(tools) if tools else 0}")
 

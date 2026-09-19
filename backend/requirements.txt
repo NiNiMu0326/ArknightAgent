@@ -25,3 +25,7 @@ langfuse>=2.0.0
 ragas>=0.4.0
 nest-asyncio
 prts-mcp==2.7.0
+# mcp 原先只作为 prts-mcp 的间接依赖（prts-mcp 2.7.0 要求 mcp[cli]==2.0.0），
+# 显式钉住以免 prts-mcp 放宽约束后 SDK 大版本漂移（backend/agent/mcp_client.py
+# 依赖其字段命名，如 Tool.input_schema / CallToolResult.structured_content）
+mcp[cli]==2.0.0

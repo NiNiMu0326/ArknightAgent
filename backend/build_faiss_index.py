@@ -2,6 +2,7 @@
 Build FAISS vector indexes for all collections.
 Run this script to rebuild the vector database after it becomes corrupted or empty.
 """
+import logging
 import sys
 import os
 from pathlib import Path
@@ -16,6 +17,8 @@ from backend import config
 from backend.api.siliconflow import SiliconFlowClient
 from backend.storage.faiss_client import FAISSClientWrapper
 from langchain_core.documents import Document
+
+logger = logging.getLogger(__name__)
 
 
 def build_all_indexes(force: bool = False):
@@ -37,8 +40,12 @@ def build_all_indexes(force: bool = False):
             if not force and existing > 0:
                 print(f"Collection '{coll_name}' already has {existing} chunks, skipping. Use force=True to rebuild.")
                 continue
-        except Exception:
-            pass
+        except (OSError, EOFError, ValueError, RuntimeError, ImportError) as e:
+            # 索引损坏 / IO / 权限失败不能被当成“索引不存在”静默覆盖，至少留下日志
+            logger.warning(
+                "读取 '%s' 现有索引失败（%s: %s），继续按需重建",
+                coll_name, type(e).__name__, e,
+            )
 
         # Load chunks
         chunk_files = list(chunks_dir.glob('*.md')) + list(chunks_dir.glob('*.txt'))
@@ -59,6 +66,10 @@ def build_all_indexes(force: bool = False):
                 }
             ))
 
+        if not documents:
+            print(f"Skipping '{coll_name}' - no chunk files found in {chunks_dir}")
+            continue
+
         print(f"Embedding {len(documents)} chunks for collection '{coll_name}'...")
 
         # Build FAISS index using pre-computed embeddings (batch size 20)
@@ -70,6 +81,13 @@ def build_all_indexes(force: bool = False):
             batch_emb = embedding_client.embed(texts)
             all_embeddings.extend(batch_emb)
             print(f"  Embedded {min(i + batch_size, len(documents))}/{len(documents)}")
+
+        # 某批 embed 少返回时，按 documents 顺序生成 metadata 会与向量错位，必须先拦住
+        if len(all_embeddings) != len(documents):
+            raise ValueError(
+                f"Collection '{coll_name}': got {len(all_embeddings)} embeddings for "
+                f"{len(documents)} chunks; aborting to avoid document/vector misalignment"
+            )
 
         # Save index
         client.build_index(

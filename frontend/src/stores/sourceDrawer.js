@@ -34,7 +34,11 @@ export const useSourceDrawerStore = defineStore('sourceDrawer', () => {
     const tryFetch = async (col) => {
       for (const ext of ['.md', '.txt']) {
         const filename = `${chunkId}${ext}`
-        const resp = await fetch(`${API_BASE}/chunks/${col}/${filename}`)
+        // 路径参数必须编码：chunk_id 来自模型工具结果，可能含空格/中文/#/?/%
+        // （# 之后会被当 URL 片段丢弃、/ 会被当路径分隔符），裸拼会打到错误路由
+        const resp = await fetch(
+          `${API_BASE}/chunks/${encodeURIComponent(col)}/${encodeURIComponent(filename)}`
+        )
         if (resp.ok) return resp
       }
       return null
