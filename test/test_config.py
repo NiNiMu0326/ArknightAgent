@@ -81,7 +81,7 @@ class TestConfigModels:
         assert config.RERANKER_MODEL == "BAAI/bge-reranker-v2-m3"
 
     def test_deepseek_llm_model(self):
-        assert config.DEEPSEEK_LLM_MODEL == "deepseek-v4-flash"
+        assert config.DEEPSEEK_LLM_MODEL == "deepseek-flash"
 
     def test_default_temperature(self):
         assert 0 <= config.DEFAULT_TEMPERATURE <= 2.0

@@ -49,6 +49,12 @@ function openAuthModal(mode = 'login') {
   authModal.value?.open(mode)
 }
 
+// 任意组件（如 ChatView 未登录发消息时）通过 window 事件请求打开登录弹窗，
+// 与 'auth-changed' 事件同一套全局通信方式
+function onOpenAuth(e) {
+  openAuthModal(e.detail?.mode || 'login')
+}
+
 // Auto-login check on mount
 onMounted(async () => {
   if (authStore.token) {
@@ -78,11 +84,13 @@ function onCloseMobileSidebar() {
 onMounted(() => {
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('close-mobile-sidebar', onCloseMobileSidebar)
+  window.addEventListener('open-auth', onOpenAuth)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('close-mobile-sidebar', onCloseMobileSidebar)
+  window.removeEventListener('open-auth', onOpenAuth)
 })
 </script>
 

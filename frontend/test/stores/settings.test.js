@@ -95,8 +95,8 @@ describe('useSettingsStore', () => {
   describe('setModel', () => {
     it('sets currentModel', () => {
       const store = useSettingsStore()
-      store.setModel('deepseek-v4-flash')
-      expect(store.currentModel).toBe('deepseek-v4-flash')
+      store.setModel('deepseek-flash')
+      expect(store.currentModel).toBe('deepseek-flash')
     })
 
     it('saves model to localStorage', () => {
@@ -123,17 +123,17 @@ describe('useSettingsStore', () => {
     it('fetches models and populates availableModels', async () => {
       api.getModels.mockResolvedValue({
         models: [
-          { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+          { id: 'deepseek-flash', name: 'DeepSeek V4 Flash' },
           { id: 'qwen-32b', name: 'Qwen 32B' },
         ],
-        default: 'deepseek-v4-flash',
+        default: 'deepseek-flash',
       })
 
       const store = useSettingsStore()
       await store.loadModels()
 
       expect(store.availableModels.length).toBe(2)
-      expect(store.availableModels[0].id).toBe('deepseek-v4-flash')
+      expect(store.availableModels[0].id).toBe('deepseek-flash')
     })
 
     it('sets currentModel to default if not already set', async () => {
@@ -148,10 +148,10 @@ describe('useSettingsStore', () => {
       expect(store.currentModel).toBe('m1')
     })
 
-    it('does not override currentModel if already set', async () => {
+    it('does not override currentModel if already set (and id is in list)', async () => {
       api.getModels.mockResolvedValue({
-        models: [{ id: 'm1' }],
-        default: 'm1',
+        models: [{ id: 'custom-model' }],
+        default: 'custom-model',
       })
 
       const store = useSettingsStore()
@@ -159,6 +159,29 @@ describe('useSettingsStore', () => {
       await store.loadModels()
       // Should keep the existing value
       expect(store.currentModel).toBe('custom-model')
+    })
+
+    it('resets currentModel when saved model id is no longer available', async () => {
+      api.getModels.mockResolvedValue({
+        models: [{ id: 'deepseek-flash' }],
+        default: 'deepseek-flash',
+      })
+
+      const store = useSettingsStore()
+      // Simulate a model id saved before a server-side rename
+      store.setModel('deepseek-v4-flash')
+      await store.loadModels()
+      // Stale id is dropped and the default model takes over
+      expect(store.currentModel).toBe('deepseek-flash')
+    })
+
+    it('keeps saved model when list is empty (API returned nothing)', async () => {
+      api.getModels.mockResolvedValue({ models: [] })
+
+      const store = useSettingsStore()
+      store.setModel('m1')
+      await store.loadModels()
+      expect(store.currentModel).toBe('m1')
     })
 
     it('falls back to first model if no default', async () => {

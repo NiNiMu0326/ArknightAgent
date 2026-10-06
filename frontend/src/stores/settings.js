@@ -43,6 +43,11 @@ export const useSettingsStore = defineStore('settings', () => {
     try {
       const res = await api.getModels()
       availableModels.value = res.models || []
+      // 本地持久化的模型 id 可能已下线（如服务端改名），失效时清空以回落到默认模型
+      const ids = availableModels.value.map(m => m.id)
+      if (availableModels.value.length > 0 && currentModel.value && !ids.includes(currentModel.value)) {
+        currentModel.value = ''
+      }
       if (!currentModel.value) {
         currentModel.value = res.default || (res.models[0]?.id ?? '')
       }

@@ -503,12 +503,14 @@ import {
   normalizeMcpDisplay,
 } from '../utils/toolMeta'
 import { useToastStore } from '../stores/toast'
+import { useAuthStore } from '../stores/auth'
 
 const sessionStore = useSessionStore()
 const quickQuestionsStore = useQuickQuestionsStore()
 const settingsStore = useSettingsStore()
 const sourceDrawerStore = useSourceDrawerStore()
 const toastStore = useToastStore()
+const authStore = useAuthStore()
 
 const inputText = ref('')
 const isLoading = ref(false)
@@ -1114,9 +1116,19 @@ function autoResize(e) {
   }
 }
 
+// Agent 接口全部需要登录（/agent/session、/agent/chat 均 401 保护）。
+// 未登录时不发请求，弹出登录框引导，避免请求失败后只留下难懂的报错。
+function ensureLoggedIn() {
+  if (authStore.isLoggedIn) return true
+  toastStore.show('请先登录后再使用对话功能', 'error')
+  window.dispatchEvent(new CustomEvent('open-auth', { detail: { mode: 'login' } }))
+  return false
+}
+
 async function sendMessage() {
   const content = inputText.value.trim()
   if (!content) return
+  if (!ensureLoggedIn()) return
 
   // If already loading, add to queue (max 20 messages)
   if (isLoading.value) {
@@ -1195,7 +1207,15 @@ async function startAgentStream(content) {
       }
     } catch (e) {
       console.error('Failed to create backend session:', e)
-      sessionStore.addMessage('assistant', '错误: 无法创建会话，请重试')
+      if (e.status === 401) {
+        // 本地有凭据但服务端判定无效（token 过期/被清）：清除并引导重新登录
+        authStore.clearAuth()
+        toastStore.show('登录已过期，请重新登录后再对话', 'error')
+        window.dispatchEvent(new CustomEvent('open-auth', { detail: { mode: 'login' } }))
+        sessionStore.addMessage('assistant', '错误: 登录已过期，请重新登录后再发送消息')
+      } else {
+        sessionStore.addMessage('assistant', '错误: 无法创建会话，请重试')
+      }
       if (activeStreamState === streamState) activeStreamState = null
       isLoading.value = false
       return
@@ -1616,6 +1636,7 @@ function handleMessagesScroll() {
 function regenerateLast() {
   const session = sessionStore.currentSession
   if (!session || isLoading.value) return
+  if (!ensureLoggedIn()) return
   const msgs = session.messages
   let userIdx = -1
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1660,6 +1681,7 @@ async function saveEdit(idx) {
   const newContent = editingText.value.trim()
   cancelEdit()
   if (!session || !newContent || isLoading.value) return
+  if (!ensureLoggedIn()) return
   const msg = session.messages[idx]
   if (!msg || msg.role !== 'user') return
   // 内容没变则不产生任何操作

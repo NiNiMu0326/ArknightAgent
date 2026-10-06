@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   settingsStore: { currentModel: '' },
   sourceDrawerStore: { open: vi.fn() },
   toastStore: { show: vi.fn() },
+  authStore: { isLoggedIn: true, clearAuth: vi.fn() },
 }))
 
 vi.mock('../src/stores/sessions', () => ({ useSessionStore: () => mocks.sessionStore }))
@@ -45,6 +46,7 @@ vi.mock('../src/stores/quickQuestions', () => ({ useQuickQuestionsStore: () => m
 vi.mock('../src/stores/settings', () => ({ useSettingsStore: () => mocks.settingsStore }))
 vi.mock('../src/stores/sourceDrawer', () => ({ useSourceDrawerStore: () => mocks.sourceDrawerStore }))
 vi.mock('../src/stores/toast', () => ({ useToastStore: () => mocks.toastStore }))
+vi.mock('../src/stores/auth', () => ({ useAuthStore: () => mocks.authStore }))
 
 // 注意：**不 mock** frontend/src/api.js —— 被测的 escapeHtml 必须是真的，
 // 否则「escapeHtml 不转义双引号」这个前提就被替身掩盖了。

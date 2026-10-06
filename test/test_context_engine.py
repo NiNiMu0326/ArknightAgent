@@ -220,7 +220,7 @@ class TestRollingSummary:
     def test_incremental_update_success(self):
         s = make_session(9)
         client = FakeSummaryClient("简明摘要")
-        updated = asyncio.run(update_rolling_summary(s, client, "deepseek-v4-flash"))
+        updated = asyncio.run(update_rolling_summary(s, client, "deepseek-flash"))
         assert updated is True
         assert s.summary == "简明摘要"
         assert s.summary_up_to_turn == 9 - CONTEXT_KEEP_RECENT_TURNS

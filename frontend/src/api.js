@@ -304,7 +304,11 @@ export const api = {
       method: 'POST',
       headers: getAuthHeaders(true),
     })
-    if (!response.ok) throw new Error('Failed to create session')
+    if (!response.ok) {
+      const err = new Error('Failed to create session')
+      err.status = response.status
+      throw err
+    }
     return response.json()
   },
 

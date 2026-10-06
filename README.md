@@ -7,7 +7,7 @@
 ## 功能特性
 
 - **AI Agent 自主决策**：LLM 通过 Function Calling 自主选择工具、并行执行、判断信息充足性，最多 15 轮工具调用；带循环检测、重复工具调用提醒、同一会话并发锁与提示词注入防护
-- **多 LLM 模型支持**：通过 `llm_factory` 统一调度，当前接入 DeepSeek-V4-Flash，可扩展更多模型
+- **多 LLM 模型支持**：通过 `llm_factory` 统一调度，当前接入 DeepSeek-Flash，可扩展更多模型
 - **知识库检索**：FAISS 向量 + BM25 关键词混合检索 → RRF 融合 → Cross-Encoder 重排 → Parent Document 扩展；`top_k` 默认 3
 - **知识图谱查询（GraphRAG）**：NetworkX 有向图，支持单实体邻居查询和双实体最短路径查找
 - **结构化数值查询**：只读 SQLite 查询干员/敌人数值，支持比较、排序、统计
@@ -274,7 +274,7 @@ MCP 不可用时 Agent 自动使用本地工具继续服务。MCP 结果拆分�
 | 组件 | 技术 |
 | --- | --- |
 | 后端框架 | FastAPI + Uvicorn |
-| Agent LLM | DeepSeek-V4-Flash（通过 llm_factory 统一调度） |
+| Agent LLM | DeepSeek-Flash（通过 llm_factory 统一调度） |
 | 向量数据库 | FAISS |
 | 嵌入模型 | Pro/BAAI/bge-m3（SiliconFlow） |
 | 重排模型 | BAAI/bge-reranker-v2-m3（SiliconFlow） |
@@ -409,7 +409,7 @@ python backend/evaluation/merge_test_cases.py --verify /tmp/verify.json --rechec
 
 > **踩坑记录：回答生成的两个静默失败模式**
 >
-> 1. **`max_tokens` 是「思考 + 可见回答」的总预算。** `deepseek-v4-flash` 是思考模型，
+> 1. **`max_tokens` 是「思考 + 可见回答」的总预算。** `deepseek-flash` 是思考模型，
 >    复杂问题（剧情、跨文档关系）的 `reasoning_content` 可能吃掉全部预算，导致
 >    `finish_reason=length` 且 `content` 为空字符串。原先设为 1024 时，
 >    这类问题**稳定**生成失败（重试也没用），现改为 8192 并显式检测 `finish_reason`。

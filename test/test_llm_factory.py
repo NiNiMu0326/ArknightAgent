@@ -28,10 +28,10 @@ class TestModelRegistry:
         assert len(MODEL_REGISTRY) == 1
 
     def test_deepseek_v4_flash_in_registry(self):
-        assert "deepseek-v4-flash" in MODEL_REGISTRY
-        info = MODEL_REGISTRY["deepseek-v4-flash"]
+        assert "deepseek-flash" in MODEL_REGISTRY
+        info = MODEL_REGISTRY["deepseek-flash"]
         assert info["provider"] == "deepseek"
-        assert info["model_name"] == "deepseek-v4-flash"
+        assert info["model_name"] == "deepseek-flash"
 
     def test_all_entries_have_display_name(self):
         for mid, info in MODEL_REGISTRY.items():
@@ -59,7 +59,7 @@ class TestDefaultModel:
         assert DEFAULT_MODEL in MODEL_REGISTRY
 
     def test_default_model_is_deepseek_v4_flash(self):
-        assert DEFAULT_MODEL == "deepseek-v4-flash"
+        assert DEFAULT_MODEL == "deepseek-flash"
 
 # ============================================================
 # get_model_info
@@ -69,7 +69,7 @@ class TestGetModelInfo:
     """Test model info retrieval."""
 
     def test_get_existing_model(self):
-        info = get_model_info("deepseek-v4-flash")
+        info = get_model_info("deepseek-flash")
         assert info["provider"] == "deepseek"
 
     def test_get_unknown_model_falls_back_to_default(self):
@@ -105,7 +105,7 @@ class TestGetAvailableModels:
 
     def test_deepseek_entry(self):
         models = get_available_models()
-        ds = [m for m in models if m["id"] == "deepseek-v4-flash"]
+        ds = [m for m in models if m["id"] == "deepseek-flash"]
         assert len(ds) == 1
         assert ds[0]["provider"] == "deepseek"
 
@@ -134,15 +134,15 @@ class TestGetLlmClient:
         monkeypatch.setattr(config, 'DEEPSEEK_API_KEY', '')
 
         with pytest.raises(ValueError, match="DeepSeek API key must be provided"):
-            get_llm_client("deepseek-v4-flash")
+            get_llm_client("deepseek-flash")
 
     def test_deepseek_client_cache(self, monkeypatch):
         """Same model_id should return cached client."""
         if not config.DEEPSEEK_API_KEY:
             monkeypatch.setattr(config, 'DEEPSEEK_API_KEY', 'test-key')
 
-        client1 = get_llm_client("deepseek-v4-flash")
-        client2 = get_llm_client("deepseek-v4-flash")
+        client1 = get_llm_client("deepseek-flash")
+        client2 = get_llm_client("deepseek-flash")
         assert client1 is client2
 
     def test_get_llm_client_default(self, monkeypatch):
@@ -187,7 +187,7 @@ class TestClientCache:
         if not config.DEEPSEEK_API_KEY:
             monkeypatch.setattr(config, 'DEEPSEEK_API_KEY', 'test-key')
 
-        get_llm_client("deepseek-v4-flash")
+        get_llm_client("deepseek-flash")
         from backend.api.llm_factory import _clients
         cache_keys = list(_clients.keys())
         assert any(k.startswith("deepseek:") for k in cache_keys)

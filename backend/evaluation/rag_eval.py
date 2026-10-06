@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # 在 backend/.env 中配置 RAGAS_DEEPSEEK_API_KEY / RAGAS_MIMO_API_KEY
 JUDGE_MODELS = [
     {
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "base_url": "https://api.deepseek.com",
         "api_key": os.environ.get("RAGAS_DEEPSEEK_API_KEY", ""),
         "name": "DeepSeek-v4-flash (primary)",
@@ -58,7 +58,7 @@ if not JUDGE_MODELS:
     logger.warning("未配置任何 judge 模型 API Key (RAGAS_DEEPSEEK_API_KEY / RAGAS_MIMO_API_KEY)")
 
 
-async def generate_answer(question: str, contexts: List[str], model: str = "deepseek-v4-flash") -> str:
+async def generate_answer(question: str, contexts: List[str], model: str = "deepseek-flash") -> str:
     """Generate an answer using LLM based on retrieved contexts.
 
     This simulates the Agent final answer step (after tool retrieval),
@@ -94,7 +94,7 @@ async def generate_answer(question: str, contexts: List[str], model: str = "deep
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        # 注意：deepseek-v4-flash 是思考模型，max_tokens 是「思考 + 可见回答」的
+        # 注意：deepseek-flash 是思考模型，max_tokens 是「思考 + 可见回答」的
         # 总预算。若设得过小（如 1024），复杂问题的 reasoning 会吃光全部预算，
         # 导致 finish_reason=length 且 content 为空字符串。因此给足余量。
         "max_tokens": 8192,

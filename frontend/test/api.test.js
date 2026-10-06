@@ -223,9 +223,9 @@ describe('agentChat', () => {
 
   it('sends model in request body when provided', async () => {
     global.fetch = vi.fn().mockResolvedValue(sseResponse([{ type: 'answer_done', answer: 'x' }]))
-    await api.agentChat({ sessionId: 's', message: 'm', model: 'deepseek-v4-flash' })
+    await api.agentChat({ sessionId: 's', message: 'm', model: 'deepseek-flash' })
     const body = JSON.parse(fetch.mock.calls[0][1].body)
-    expect(body).toEqual({ session_id: 's', message: 'm', model: 'deepseek-v4-flash' })
+    expect(body).toEqual({ session_id: 's', message: 'm', model: 'deepseek-flash' })
   })
 })
 
@@ -328,13 +328,13 @@ describe('非 2xx 响应必须抛错，不能静默返回错误体（T34）', ()
 
   it('getTraces 正常路径仍组装分页与筛选参数', async () => {
     global.fetch = vi.fn().mockResolvedValue(jsonResponse({ traces: [], total: 0 }))
-    const result = await api.getTraces(2, 50, { status: 'error', modelId: 'deepseek-v4-flash', q: '能天使' })
+    const result = await api.getTraces(2, 50, { status: 'error', modelId: 'deepseek-flash', q: '能天使' })
     expect(result).toEqual({ traces: [], total: 0 })
     const params = new URLSearchParams(fetch.mock.calls[0][0].split('?')[1])
     expect(params.get('page')).toBe('2')
     expect(params.get('limit')).toBe('50')
     expect(params.get('status')).toBe('error')
-    expect(params.get('model_id')).toBe('deepseek-v4-flash')
+    expect(params.get('model_id')).toBe('deepseek-flash')
     expect(params.get('q')).toBe('能天使')
   })
 })

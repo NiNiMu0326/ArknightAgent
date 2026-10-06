@@ -56,7 +56,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # Model Settings
 EMBEDDING_MODEL = "Pro/BAAI/bge-m3"
 RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
-DEEPSEEK_LLM_MODEL = "deepseek-v4-flash"
+DEEPSEEK_LLM_MODEL = "deepseek-flash"
 DEFAULT_TEMPERATURE = 0.7
 
 # Search Settings

@@ -171,7 +171,7 @@ class _Api:
             try:
                 cur = await conn.execute(
                     "INSERT INTO traces (session_id, user_message, model_id, total_rounds, status, user_id) "
-                    "VALUES (?, ?, 'deepseek-v4-flash', 1, 'success', ?)",
+                    "VALUES (?, ?, 'deepseek-flash', 1, 'success', ?)",
                     (session_id, user_message, user_id),
                 )
                 await conn.commit()
