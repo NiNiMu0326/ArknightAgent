@@ -66,6 +66,13 @@ class TestConfigAPI:
         assert isinstance(config.TAVILY_API_KEY, str)
         assert isinstance(config.DEEPSEEK_API_KEY, str)
 
+    def test_deepseek_search_settings(self):
+        """DeepSeek Search 兜底的三项配置应存在且类型正确。"""
+        assert isinstance(config.DEEPSEEK_SEARCH_ENABLED, bool)
+        assert config.DEEPSEEK_SEARCH_URL.endswith("/v1/tools/search")
+        assert isinstance(config.DEEPSEEK_SEARCH_TIMEOUT, float)
+        assert config.DEEPSEEK_SEARCH_TIMEOUT > 0
+
 
 # ============================================================
 # Model settings

@@ -63,6 +63,14 @@ DEFAULT_TEMPERATURE = 0.7
 RRF_K = 60
 VECTOR_WEIGHT = 0.5
 
+# DeepSeek 官方 Search API：web_search 的二级兜底（Tavily 失败/额度用尽时启用）
+# 复用 DEEPSEEK_API_KEY（环境变量 DEEPSEEK_API_KEY_2），无需额外 Key
+DEEPSEEK_SEARCH_ENABLED = _env_bool("DEEPSEEK_SEARCH_ENABLED", True)
+DEEPSEEK_SEARCH_URL = os.environ.get(
+    "DEEPSEEK_SEARCH_URL", "https://api.deepseek.com/v1/tools/search"
+)
+DEEPSEEK_SEARCH_TIMEOUT = _env_float("DEEPSEEK_SEARCH_TIMEOUT", 20.0)
+
 # FAISS
 FAISS_INDEX_DIR = BASE_DIR / "faiss_index"
 FAISS_INDEX_DIR_STR = str(FAISS_INDEX_DIR)

@@ -1,5 +1,5 @@
 """
-Tests for backend.api.web_search: Web search with Tavily + DuckDuckGo fallback.
+Tests for backend.api.web_search: Web search with Tavily -> DeepSeek Search -> DuckDuckGo fallback.
 Usage: cd test && python -m pytest test_web_search.py -v
 """
 import sys
@@ -12,8 +12,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from backend.api.web_search import (
     search,
     _search_tavily,
+    _search_deepseek,
     _search_duckduckgo,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_providers(monkeypatch):
+    """Pin provider credentials so unit tests never touch the real network.
+
+    CI has no backend/.env, but a developer machine does, and config loads it at
+    import time: without pinning, an empty TAVILY_API_KEY test would still reach
+    the real DeepSeek Search API through the fallback chain.
+    """
+    monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "")
+    monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "")
+    monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_SEARCH_ENABLED", True)
 
 
 # ============================================================
@@ -77,6 +91,98 @@ class TestSearch:
         with patch("backend.api.web_search._search_duckduckgo", return_value=[]) as mock_ddg:
             search("test")
             mock_ddg.assert_called_once_with("test", 5)
+
+    def test_search_tavily_fails_falls_back_to_deepseek(self, monkeypatch):
+        """Tavily 抛异常（如额度用尽）时应降级到 DeepSeek Search。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "fake-key")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "ds-key")
+
+        ds_results = [{"title": "DS", "url": "https://ds.example/1", "snippet": "ds snippet"}]
+
+        with patch("backend.api.web_search._search_tavily", side_effect=Exception("quota exceeded")):
+            with patch("backend.api.web_search._search_deepseek", return_value=ds_results) as mock_ds:
+                with patch("backend.api.web_search._search_duckduckgo") as mock_ddg:
+                    results = search("test", limit=4)
+
+                    mock_ds.assert_called_once_with("test", 4, "ds-key")
+                    mock_ddg.assert_not_called()
+                    assert len(results) == 1
+                    assert results[0]["title"] == "DS"
+
+    def test_search_tavily_empty_falls_back_to_deepseek(self, monkeypatch):
+        """Tavily 正常返回空结果时，也应继续降级到 DeepSeek Search。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "fake-key")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "ds-key")
+
+        ds_results = [{"title": "DS", "url": "https://ds.example/1", "snippet": "s"}]
+
+        with patch("backend.api.web_search._search_tavily", return_value=[]):
+            with patch("backend.api.web_search._search_deepseek", return_value=ds_results) as mock_ds:
+                results = search("test", limit=5)
+
+                mock_ds.assert_called_once_with("test", 5, "ds-key")
+                assert results[0]["title"] == "DS"
+
+    def test_search_tavily_success_does_not_call_deepseek(self, monkeypatch):
+        """Tavily 成功时不应触发 DeepSeek 兜底（不浪费按次计费的额度）。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "fake-key")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "ds-key")
+
+        tavily_results = [{"title": "T", "url": "https://t.example/1", "snippet": "t"}]
+
+        with patch("backend.api.web_search._search_tavily", return_value=tavily_results):
+            with patch("backend.api.web_search._search_deepseek") as mock_ds:
+                results = search("test", limit=5)
+
+                mock_ds.assert_not_called()
+                assert results[0]["title"] == "T"
+
+    def test_search_deepseek_fail_falls_back_to_ddg(self, monkeypatch):
+        """两级都失败时应落到 DuckDuckGo。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "ds-key")
+
+        with patch("backend.api.web_search._search_deepseek", side_effect=Exception("402 balance")):
+            with patch("backend.api.web_search._search_duckduckgo", return_value=[{"title": "DDG", "url": "http://ddg.gg", "snippet": "d"}]) as mock_ddg:
+                results = search("test", limit=3)
+
+                mock_ddg.assert_called_once_with("test", 3)
+                assert results[0]["title"] == "DDG"
+
+    def test_search_deepseek_empty_falls_back_to_ddg(self, monkeypatch):
+        """DeepSeek 返回空结果时继续降级到 DuckDuckGo。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "ds-key")
+
+        with patch("backend.api.web_search._search_deepseek", return_value=[]):
+            with patch("backend.api.web_search._search_duckduckgo", return_value=[]) as mock_ddg:
+                assert search("test", limit=3) == []
+                mock_ddg.assert_called_once_with("test", 3)
+
+    def test_search_deepseek_disabled_skips_stage(self, monkeypatch):
+        """DEEPSEEK_SEARCH_ENABLED=false 时应直接走 DuckDuckGo。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "ds-key")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_SEARCH_ENABLED", False)
+
+        with patch("backend.api.web_search._search_deepseek") as mock_ds:
+            with patch("backend.api.web_search._search_duckduckgo", return_value=[]) as mock_ddg:
+                search("test", limit=3)
+
+                mock_ds.assert_not_called()
+                mock_ddg.assert_called_once_with("test", 3)
+
+    def test_search_no_deepseek_key_skips_stage(self, monkeypatch):
+        """没有 DeepSeek Key 时不应调用 DeepSeek 分支。"""
+        monkeypatch.setattr("backend.api.web_search.config.TAVILY_API_KEY", "")
+        monkeypatch.setattr("backend.api.web_search.config.DEEPSEEK_API_KEY", "")
+
+        with patch("backend.api.web_search._search_deepseek") as mock_ds:
+            with patch("backend.api.web_search._search_duckduckgo", return_value=[]) as mock_ddg:
+                search("test", limit=3)
+
+                mock_ds.assert_not_called()
+                mock_ddg.assert_called_once_with("test", 3)
 
 
 # ============================================================
@@ -179,6 +285,133 @@ class TestSearchTavily:
         with patch("backend.api.web_search._session.post", return_value=mock_response):
             with pytest.raises(Exception, match="HTTP 500"):
                 _search_tavily("q", 5, "key")
+
+
+# ============================================================
+# _search_deepseek
+# ============================================================
+
+class TestSearchDeepSeek:
+    """Test the DeepSeek official Search API client (POST /v1/tools/search)."""
+
+    def test_calls_correct_endpoint_and_payload(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response) as mock_post:
+            _search_deepseek("银灰 攻击力", 3, "ds-key")
+
+            args, kwargs = mock_post.call_args
+            assert args[0] == "https://api.deepseek.com/v1/tools/search"
+            assert kwargs["headers"]["Authorization"] == "Bearer ds-key"
+            assert kwargs["headers"]["Content-Type"] == "application/json"
+            assert kwargs["json"] == {"query": "银灰 攻击力", "count": 3, "need_content": False}
+            assert kwargs["timeout"] == 20.0
+
+    def test_parses_results(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "results": [
+                {"title": "T1", "url": "https://a.com", "snippet": "S1", "summary": "Long 1"},
+                {"title": "T2", "url": "https://b.com", "snippet": "S2", "summary": "Long 2"},
+            ]
+        }
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response):
+            results = _search_deepseek("q", 5, "key")
+
+            assert results == [
+                {"title": "T1", "url": "https://a.com", "snippet": "S1"},
+                {"title": "T2", "url": "https://b.com", "snippet": "S2"},
+            ]
+
+    def test_uses_summary_when_snippet_missing(self):
+        """snippet 为空时退回 summary（长摘要），保证喂给模型的不是空串。"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "results": [{"title": "T", "url": "https://a.com", "snippet": "", "summary": "Long summary"}]
+        }
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response):
+            results = _search_deepseek("q", 5, "key")
+
+            assert results[0]["snippet"] == "Long summary"
+
+    def test_limits_results(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "results": [
+                {"title": f"R{i}", "url": f"https://r{i}.com", "snippet": f"S{i}"} for i in range(10)
+            ]
+        }
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response):
+            assert len(_search_deepseek("q", 3, "key")) == 3
+
+    def test_clamps_count_into_api_range(self):
+        """count 必须在 1~50：limit=0 -> 1，limit=120 -> 50。"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response) as mock_post:
+            _search_deepseek("q", 0, "key")
+            assert mock_post.call_args[1]["json"]["count"] == 1
+
+            _search_deepseek("q", 120, "key")
+            assert mock_post.call_args[1]["json"]["count"] == 50
+
+    def test_truncates_long_query(self):
+        """query 上限 128 字符，超长应截断而不是让接口返回 400。"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response) as mock_post:
+            _search_deepseek("阿" * 200, 5, "key")
+            sent = mock_post.call_args[1]["json"]["query"]
+            assert len(sent) == 128
+
+    def test_strips_query(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response) as mock_post:
+            _search_deepseek("  银灰  ", 5, "key")
+            assert mock_post.call_args[1]["json"]["query"] == "银灰"
+
+    def test_missing_keys_in_result(self):
+        """字段缺失时补空串，不抛 KeyError。"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": [{"title": "Only Title"}]}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response):
+            results = _search_deepseek("q", 5, "key")
+
+            assert results == [{"title": "Only Title", "url": "", "snippet": ""}]
+
+    def test_empty_response(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response):
+            assert _search_deepseek("q", 5, "key") == []
+
+    def test_http_error_propagates(self):
+        """4xx/5xx 交给 search() 决定是否降级，本函数只负责抛。"""
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = Exception("HTTP 402")
+
+        with patch("backend.api.web_search._session.post", return_value=mock_response):
+            with pytest.raises(Exception, match="HTTP 402"):
+                _search_deepseek("q", 5, "key")
 
 
 # ============================================================

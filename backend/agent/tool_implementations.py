@@ -199,7 +199,7 @@ async def execute_graphrag_search(arguments: Dict[str, Any], session_id: str = "
 
 
 async def execute_web_search(arguments: Dict[str, Any], session_id: str = "") -> List[Dict]:
-    """Execute web_search tool using Tavily + DuckDuckGo.
+    """Execute web_search tool using Tavily -> DeepSeek Search -> DuckDuckGo.
 
     Deduplicates results against previously returned URLs within the same session,
     so the LLM doesn't see the same links across multiple rounds.

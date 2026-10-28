@@ -12,7 +12,7 @@
 - **知识图谱查询（GraphRAG）**：NetworkX 有向图，支持单实体邻居查询和双实体最短路径查找
 - **结构化数值查询**：只读 SQLite 查询干员/敌人数值，支持比较、排序、统计
 - **出怪顺序查询**：`arknights_stage_waves` 解析 prts-mcp 同步的官方关卡 level JSON，按含 SPAWN 的 fragments 返回用户可见波次与刷怪顺序
-- **网络搜索**：Tavily API + DuckDuckGo 兜底，补充外部实时信息
+- **网络搜索**：Tavily API → DeepSeek 官方 Search API → DuckDuckGo 逐级兜底，补充外部实时信息
 - **PRTS MCP 工具**：官方 mcp SDK stdio 子进程接入，7 个白名单工具，连接失败自动降级；立绘图片进入前端展示层，不发送给 LLM
 - **快捷问题**：`/quick-questions` 每次返回 9 个不重复问题，覆盖关系、技能、故事、敌人、别名、结构化、立绘、出怪、材料掉落
 - **用户认证**：注册、登录、JWT 令牌认证，会话持久化到 SQLite
@@ -51,7 +51,8 @@ cp .env.example .env
 可选：
 
 - `DEEPSEEK_API_KEY_2` - DeepSeek 官方模型
-- `TAVILY_API_KEY` - 网络搜索（不填则使用 DuckDuckGo 兜底）
+- `TAVILY_API_KEY` - 网络搜索（免费额度每月 1000 次；不填或调用失败时自动降级到 DeepSeek Search，再降级到 DuckDuckGo）
+- `DEEPSEEK_SEARCH_ENABLED` - 是否启用 DeepSeek Search 二级兜底（默认 true，复用 `DEEPSEEK_API_KEY_2`；按成功请求计费，每 1000 次 5 元）
 - `PRTS_MCP_ENABLED` - 是否启用 PRTS MCP 工具（默认 true）
 - `PRTS_MCP_COMMAND` - MCP 子进程命令（默认 `prts-mcp`）
 - `PRTS_MCP_CONNECT_TIMEOUT` / `PRTS_MCP_CALL_TIMEOUT` - 连接/调用超时（秒）
@@ -104,7 +105,7 @@ Agent 自主循环：每轮 LLM 返回工具调用时并行执行，结果加入
 | `arknights_graphrag_search` | 知识图谱查询 | 单实体邻居 / 双实体最短路径（3 跳内） |
 | `arknights_structured_query` | 结构化数值查询 | 只读 SQLite：干员/敌人数值比较、排序、统计 |
 | `arknights_stage_waves` | 出怪顺序 | 读取 prts-mcp 同步的 `stage_table.json` + 关卡 level JSON，把每个含 SPAWN 的 fragment 作为一个用户可见波次 |
-| `web_search` | 网络搜索 | Tavily + DuckDuckGo，会话内 URL 去重 |
+| `web_search` | 网络搜索 | Tavily → DeepSeek Search → DuckDuckGo，会话内 URL 去重 |
 
 `arknights_stage_waves` 输出 `stage_code / stage_id / stage_name / total_waves / waves[{wave, wave_pre_delay, spawns[{order, enemy_id, enemy_name, count, pre_delay, interval, route_index}]}]`，结果最多 60 波 / 400 个 spawn，超出时返回截断说明。
 
@@ -149,7 +150,7 @@ MCP 不可用时 Agent 自动使用本地工具继续服务。MCP 结果拆分�
 │   │   ├── deepseek.py          # OpenAI 兼容客户端（Chat + FC + 流式）
 │   │   ├── llm_factory.py       # 多 Provider LLM 工厂
 │   │   ├── siliconflow.py       # SiliconFlow API（嵌入 + 重排）
-│   │   ├── web_search.py        # 网络搜索（Tavily + DuckDuckGo）
+│   │   ├── web_search.py        # 网络搜索（Tavily → DeepSeek Search → DuckDuckGo）
 │   │   └── base.py              # 公共 HTTP 客户端工具（重试 + 连接池）
 │   ├── rag/                     # RAG 底层基础设施
 │   │   ├── retrievers.py        # 多通道检索（FAISS + BM25 + RRF），5h 缓存
@@ -279,7 +280,7 @@ MCP 不可用时 Agent 自动使用本地工具继续服务。MCP 结果拆分�
 | 嵌入模型 | Pro/BAAI/bge-m3（SiliconFlow） |
 | 重排模型 | BAAI/bge-reranker-v2-m3（SiliconFlow） |
 | 中文分词 | jieba（BM25 索引构建） |
-| 网络搜索 | Tavily + DuckDuckGo |
+| 网络搜索 | Tavily + DeepSeek Search + DuckDuckGo |
 | MCP | prts-mcp（官方 mcp SDK stdio 客户端） |
 | 知识图谱 | NetworkX DiGraph |
 | 数据库 | SQLite（aiosqlite） |
